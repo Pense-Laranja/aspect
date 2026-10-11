@@ -153,6 +153,45 @@ func TestBuildPlan(t *testing.T) {
 	}
 }
 
+func TestBuildPlanWithModules(t *testing.T) {
+	c, err := LoadConfig(filepath.Join("..", "..", DefaultConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	specPath := filepath.Join("..", "..", "examples", "inventory", "aspect.yaml")
+	changes := []Change{
+		{Path: "ledger/ledger.go", Added: 10, Deleted: 2},
+		{Path: "README.md", Added: 5},
+	}
+	p := BuildPlan(c, "base123", "head456", changes, specPath)
+	if len(p.Modules) == 0 {
+		t.Fatal("expected modules to be populated in plan")
+	}
+	var ledgerMod *ModuleContext
+	for i := range p.Modules {
+		if p.Modules[i].Name == "ledger" {
+			ledgerMod = &p.Modules[i]
+			break
+		}
+	}
+	if ledgerMod == nil {
+		t.Fatal("expected ledger module in plan.Modules")
+	}
+	if len(ledgerMod.Invariants) == 0 {
+		t.Errorf("expected invariants on ledger module, got none")
+	}
+	if len(ledgerMod.Files) != 1 || ledgerMod.Files[0] != "ledger/ledger.go" {
+		t.Errorf("expected ledger module to have ledger/ledger.go, got %v", ledgerMod.Files)
+	}
+	ar, ok := p.Agent("adversarial-reviewer")
+	if !ok {
+		t.Fatal("expected adversarial-reviewer in plan")
+	}
+	if !slices.Contains(ar.Modules, "ledger") {
+		t.Errorf("expected adversarial-reviewer to reference ledger module, got %v", ar.Modules)
+	}
+}
+
 // report builds a valid report JSON for an agent, with the given findings.
 func report(agent, mode string, findings ...Finding) []byte {
 	r := Report{Schema: ReportSchema, Agent: agent, Mode: mode, Base: "aaaaaaa1", Head: "bbbbbbb2", Summary: "checked", Findings: findings, Handoffs: []Handoff{}, Changes: []Written{}}

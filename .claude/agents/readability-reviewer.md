@@ -60,9 +60,16 @@ out:  .review/<run-id>/readability-reviewer.json
 1. Read `.claude/review/PROTOCOL.md`.
 2. Run `git diff <base>...<head>` via Bash to inspect the changes.
 3. Read the surrounding context of modified functions using `Read`.
+4. Read the touched module invariants in `_aspect/modules/<module>.yaml` and repository key patterns in `CLAUDE.md`.
 
 ### Phase 2: Readability Checklist
 Review changed code against these clarity benchmarks:
+- [ ] **UI & DX Architectural Mandates:**
+      - **Filter Component Mandate:** Are filters built using the standard filter component (`vx.FilterData` / `vx.VXFilter` or `translationFilterPanel`)? Hand-rolled chip/pill rows or custom filter controls are strictly banned repository-wide.
+      - **Filter Defaults:** Do filter dimensions open at "all", with the year dimension defaulting to the current calendar year (`time.Now().Year()`)?
+      - **Vue Template Inertness (`v-pre`):** Is user-supplied or dynamic content on Vue-compiled pages wrapped with `v-pre` to prevent template interpolation crashes on `{{ ... }}`?
+      - **Standard Import Aliases:** Are standard aliases used (`m` models, `l` i18n, `v` vuetify, `vx` vuetifyx, `h` htmlgo)?
+      - **Portuguese Store URLs:** Are all customer-facing store paths and endpoints in Portuguese?
 - [ ] **Nesting & Early Returns:**
       - Is code nested 3+ levels deep inside `if/else/for` blocks?
       - Can guard clauses and early returns flatten the function into a clean, linear flow?

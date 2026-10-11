@@ -8,6 +8,7 @@ package spec
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -295,6 +296,70 @@ type Surface struct {
 	Auth       string   `yaml:"auth,omitempty" json:"auth,omitempty"`
 }
 
+// Invariant is a property that must hold in every state of a module.
+// In specs it can be written as a plain string or as an object with ID, category,
+// statement, and enforcement method.
+type Invariant struct {
+	ID          string `yaml:"id,omitempty" json:"id,omitempty"`
+	Category    string `yaml:"category,omitempty" json:"category,omitempty"` // correctness, performance, quality, readability, security, etc.
+	Statement   string `yaml:"statement" json:"statement"`
+	Enforcement string `yaml:"enforcement,omitempty" json:"enforcement,omitempty"` // test, ast, review
+}
+
+func (inv *Invariant) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		inv.Statement = value.Value
+		return nil
+	}
+	type raw Invariant
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return err
+	}
+	*inv = Invariant(r)
+	return nil
+}
+
+func (inv Invariant) MarshalYAML() (any, error) {
+	if inv.ID == "" && inv.Category == "" && inv.Enforcement == "" {
+		return inv.Statement, nil
+	}
+	type raw Invariant
+	return raw(inv), nil
+}
+
+func (inv *Invariant) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil
+	}
+	if data[0] == '"' {
+		return json.Unmarshal(data, &inv.Statement)
+	}
+	type raw Invariant
+	var r raw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	*inv = Invariant(r)
+	return nil
+}
+
+func (inv Invariant) MarshalJSON() ([]byte, error) {
+	if inv.ID == "" && inv.Category == "" && inv.Enforcement == "" {
+		return json.Marshal(inv.Statement)
+	}
+	type raw Invariant
+	return json.Marshal(raw(inv))
+}
+
+func (inv Invariant) String() string {
+	if inv.ID != "" {
+		return fmt.Sprintf("[%s] %s", inv.ID, inv.Statement)
+	}
+	return inv.Statement
+}
+
 // Module is a unit of implementation with its own intent. Modules are generated
 // in dependency order, each one seeing the interfaces of its dependencies.
 type Module struct {
@@ -303,7 +368,7 @@ type Module struct {
 	Goals       []string    `yaml:"goals,omitempty" json:"goals,omitempty"`
 	DependsOn   []string    `yaml:"depends_on,omitempty" json:"depends_on,omitempty"`
 	Interface   []Operation `yaml:"interface,omitempty" json:"interface,omitempty"`
-	Invariants  []string    `yaml:"invariants,omitempty" json:"invariants,omitempty"`
+	Invariants  []Invariant `yaml:"invariants,omitempty" json:"invariants,omitempty"`
 	Scenarios   []Scenario  `yaml:"scenarios,omitempty" json:"scenarios,omitempty"`
 	Constraints []string    `yaml:"constraints,omitempty" json:"constraints,omitempty"`
 	// Entities this module owns: it defines the persistent type and is the
@@ -332,11 +397,12 @@ type Operation struct {
 // Scenario is a Given/When/Then example. The Tester agent turns each scenario
 // into at least one test, and the Validator checks that mapping exists.
 type Scenario struct {
-	ID    string   `yaml:"id" json:"id"`
-	Given string   `yaml:"given,omitempty" json:"given,omitempty"`
-	When  string   `yaml:"when" json:"when"`
-	Then  string   `yaml:"then" json:"then"`
-	Goals []string `yaml:"goals,omitempty" json:"goals,omitempty"`
+	ID         string   `yaml:"id" json:"id"`
+	Given      string   `yaml:"given,omitempty" json:"given,omitempty"`
+	When       string   `yaml:"when" json:"when"`
+	Then       string   `yaml:"then" json:"then"`
+	Goals      []string `yaml:"goals,omitempty" json:"goals,omitempty"`
+	Invariants []string `yaml:"invariants,omitempty" json:"invariants,omitempty"`
 }
 
 // Load reads a spec file, resolves its includes, parses it, and loads its

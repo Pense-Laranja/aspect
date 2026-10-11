@@ -5,6 +5,8 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/eideroliveira/aspect/internal/spec"
 )
 
 // PlanSchema identifies a plan document.
@@ -23,34 +25,45 @@ type Change struct {
 	Deleted int    `json:"deleted"`
 }
 
+// ModuleContext carries the spec metadata for one module touched by the changes:
+// its intent, goals, owned entities, and invariants that must be preserved.
+type ModuleContext struct {
+	Name       string           `json:"name"`
+	Intent     string           `json:"intent,omitempty"`
+	Goals      []string         `json:"goals,omitempty"`
+	Entities   []string         `json:"entities,omitempty"`
+	Invariants []spec.Invariant `json:"invariants,omitempty"`
+	Files      []string         `json:"files,omitempty"`
+}
+
 // Plan is the list of agents that apply to a change. It is written next to
 // the reports so Check knows which reports must exist.
 type Plan struct {
-	Schema       string    `json:"schema"`
-	Spec         string    `json:"spec"`
-	Base         string    `json:"base"`
-	Head         string    `json:"head"`
-	ChangedFiles int       `json:"changed_files"`
-	ChangedLines int       `json:"changed_lines"`
-	Agents       []Planned `json:"agents"`
+	Schema       string          `json:"schema"`
+	Spec         string          `json:"spec"`
+	Base         string          `json:"base"`
+	Head         string          `json:"head"`
+	ChangedFiles int             `json:"changed_files"`
+	ChangedLines int             `json:"changed_lines"`
+	Agents       []Planned       `json:"agents"`
+	Modules      []ModuleContext `json:"modules,omitempty"`
 }
 
 // Planned is one agent the orchestrator must run.
 type Planned struct {
-	Agent  string `json:"agent"`
-	Mode   string `json:"mode"`
-	Reason string `json:"reason"`
-	// Files are the changed paths that made the gate apply, so the agent can
-	// start from them.
-	Files []string `json:"files"`
+	Agent   string   `json:"agent"`
+	Mode    string   `json:"mode"`
+	Reason  string   `json:"reason"`
+	Files   []string `json:"files"`
+	Modules []string `json:"modules,omitempty"`
 }
 
 // BuildPlan decides which gates apply to the changes, in the order
 // gates.yaml lists them. A gate applies when at least one changed file
 // matches its paths and its When condition, if any, holds. spec is the
 // entry point Config.ResolveSpec chose, or NoSpec.
-func BuildPlan(c *Config, base, head string, changes []Change, spec string) *Plan {
-	p := &Plan{Schema: PlanSchema, Spec: spec, Base: base, Head: head, ChangedFiles: len(changes), Agents: []Planned{}}
+func BuildPlan(c *Config, base, head string, changes []Change, specPath string) *Plan {
+	p := &Plan{Schema: PlanSchema, Spec: specPath, Base: base, Head: head, ChangedFiles: len(changes), Agents: []Planned{}}
 	for _, ch := range changes {
 		p.ChangedLines += ch.Added + ch.Deleted
 	}
@@ -85,7 +98,72 @@ func BuildPlan(c *Config, base, head string, changes []Change, spec string) *Pla
 		}
 		p.Agents = append(p.Agents, Planned{Agent: g.Agent, Mode: g.Mode, Reason: reason, Files: files})
 	}
+
+	if specPath != NoSpec && specPath != "" {
+		if sp, err := spec.Load(specPath); err == nil && sp != nil {
+			for _, m := range sp.AllModules() {
+				var modFiles []string
+				for _, ch := range changes {
+					if matchModule(m, ch.Path) {
+						modFiles = append(modFiles, ch.Path)
+					}
+				}
+				if len(modFiles) > 0 {
+					p.Modules = append(p.Modules, ModuleContext{
+						Name:       m.Name,
+						Intent:     m.Intent,
+						Goals:      m.Goals,
+						Entities:   m.Entities,
+						Invariants: m.Invariants,
+						Files:      modFiles,
+					})
+				}
+			}
+			for i := range p.Agents {
+				var agentMods []string
+				for _, mc := range p.Modules {
+					if hasIntersection(mc.Files, p.Agents[i].Files) {
+						agentMods = append(agentMods, mc.Name)
+					}
+				}
+				p.Agents[i].Modules = agentMods
+			}
+		}
+	}
+
 	return p
+}
+
+func matchModule(m *spec.Module, filePath string) bool {
+	dir1 := m.Name + "/"
+	dir2 := strings.ReplaceAll(m.Name, "_", "/") + "/"
+	base := path.Base(filePath)
+	ext := path.Ext(filePath)
+	stem := strings.TrimSuffix(base, ext)
+
+	if strings.HasPrefix(filePath, dir1) || strings.HasPrefix(filePath, dir2) {
+		return true
+	}
+	if stem == m.Name || stem == strings.ReplaceAll(m.Name, "_", "/") {
+		return true
+	}
+	if filePath == "_aspect/modules/"+m.Name+".yaml" || filePath == "_aspect/briefs/"+m.Name+".md" {
+		return true
+	}
+	return false
+}
+
+func hasIntersection(a, b []string) bool {
+	set := make(map[string]bool, len(a))
+	for _, x := range a {
+		set[x] = true
+	}
+	for _, y := range b {
+		if set[y] {
+			return true
+		}
+	}
+	return false
 }
 
 // Agent reports whether the plan includes the named agent.

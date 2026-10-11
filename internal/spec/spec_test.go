@@ -593,3 +593,95 @@ modules:
 		t.Errorf("job and mcp kinds, a web event on its page and middleware on /* must pass; got %v", got)
 	}
 }
+
+func TestValidateInvariants(t *testing.T) {
+	validSpec := `
+aspect: 1
+system:
+  name: test
+  intent: test
+  language: go
+  module_path: example.com/test
+  goals:
+    - {id: G1, statement: test goal, verify: test}
+modules:
+  - name: billing
+    intent: billing intent
+    goals: [G1]
+    invariants:
+      - id: INV-CHARGE-ONCE
+        category: correctness
+        statement: An order has at most one live charge.
+        enforcement: test
+      - Plain string invariant without an ID.
+    scenarios:
+      - id: S1
+        when: pay
+        then: charged
+        invariants: [INV-CHARGE-ONCE]
+`
+	s, err := Parse([]byte(validSpec))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	issues := Validate(s)
+	if issues.HasErrors() {
+		t.Fatalf("valid invariants should pass validation: %v", issues)
+	}
+	if len(s.Modules[0].Invariants) != 2 {
+		t.Fatalf("expected 2 invariants, got %d", len(s.Modules[0].Invariants))
+	}
+	if s.Modules[0].Invariants[0].ID != "INV-CHARGE-ONCE" || s.Modules[0].Invariants[0].Category != "correctness" {
+		t.Fatalf("structured invariant not unmarshaled correctly: %+v", s.Modules[0].Invariants[0])
+	}
+	if s.Modules[0].Invariants[1].Statement != "Plain string invariant without an ID." {
+		t.Fatalf("string invariant not unmarshaled correctly: %+v", s.Modules[0].Invariants[1])
+	}
+
+	invalidSpec := `
+aspect: 1
+system:
+  name: test
+  intent: test
+  language: go
+  module_path: example.com/test
+  goals:
+    - {id: G1, statement: test goal, verify: test}
+modules:
+  - name: billing
+    intent: billing intent
+    goals: [G1]
+    invariants:
+      - "{}"
+      - id: "INVALID ID SPACES"
+        category: bogus_category
+        statement: "Something"
+        enforcement: bogus_enforcement
+      - id: "INV-DUP"
+        statement: "first"
+      - id: "INV-DUP"
+        statement: "second"
+    scenarios:
+      - id: S1
+        when: pay
+        then: charged
+        invariants: [UNKNOWN-INV]
+`
+	s2, err := Parse([]byte(invalidSpec))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	text := join(Validate(s2))
+	for _, want := range []string{
+		`invariant statement cannot be empty or '{}'`,
+		`invalid invariant id "INVALID ID SPACES"`,
+		`unknown category "bogus_category"`,
+		`unknown enforcement "bogus_enforcement"`,
+		`duplicate invariant id "INV-DUP"`,
+		`references unknown invariant id "UNKNOWN-INV"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing expected validation message containing %q\ngot:\n%s", want, text)
+		}
+	}
+}

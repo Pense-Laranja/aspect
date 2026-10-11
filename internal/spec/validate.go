@@ -50,9 +50,17 @@ func (is Issues) HasErrors() bool {
 }
 
 var (
-	identRe  = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-	entityRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+	identRe       = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	entityRe      = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+	invariantIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 )
+
+var invariantCategories = []string{
+	"correctness", "performance", "quality", "readability",
+	"security", "data", "contract", "i18n", "architecture",
+}
+
+var invariantEnforcements = []string{"test", "ast", "review", "invariant"}
 
 // SupportedLanguages lists the languages the pipeline can build and test.
 var SupportedLanguages = []string{"go", "swift"}
@@ -568,6 +576,29 @@ func validateModules(c *collector, x *ctx) {
 			if len(m.Scenarios) == 0 && len(m.Invariants) == 0 {
 				c.add(Warning, p, "module %q has no scenarios or invariants; tests will be inferred from the interface only", m.Name)
 			}
+			seenInvariantID := map[string]bool{}
+			for j, inv := range m.Invariants {
+				invPath := fmt.Sprintf("%s.invariants[%d]", p, j)
+				stmt := strings.TrimSpace(inv.Statement)
+				if stmt == "" || stmt == "{}" {
+					c.add(Error, invPath, "invariant statement cannot be empty or '{}'")
+				}
+				if inv.ID != "" {
+					if !invariantIDRe.MatchString(inv.ID) {
+						c.add(Error, invPath+".id", "invalid invariant id %q; must contain only letters, digits, '_' or '-'", inv.ID)
+					}
+					if seenInvariantID[inv.ID] {
+						c.add(Error, invPath+".id", "duplicate invariant id %q in module %q", inv.ID, m.Name)
+					}
+					seenInvariantID[inv.ID] = true
+				}
+				if inv.Category != "" && !oneOf(inv.Category, invariantCategories) {
+					c.add(Error, invPath+".category", "unknown category %q; must be one of: %s", inv.Category, strings.Join(invariantCategories, ", "))
+				}
+				if inv.Enforcement != "" && !oneOf(inv.Enforcement, invariantEnforcements) {
+					c.add(Error, invPath+".enforcement", "unknown enforcement %q; must be test, ast, review, or invariant", inv.Enforcement)
+				}
+			}
 			seenScenario := map[string]bool{}
 			for j, sc := range m.Scenarios {
 				sp := fmt.Sprintf("%s.scenarios[%d]", p, j)
@@ -585,6 +616,11 @@ func validateModules(c *collector, x *ctx) {
 						c.add(Error, fmt.Sprintf("%s.goals[%d]", sp, k), "unknown goal %q", g)
 					}
 					covered[g] = true
+				}
+				for k, invRef := range sc.Invariants {
+					if !seenInvariantID[invRef] {
+						c.add(Warning, fmt.Sprintf("%s.invariants[%d]", sp, k), "references unknown invariant id %q in module %q", invRef, m.Name)
+					}
 				}
 			}
 			for j, op := range m.Interface {

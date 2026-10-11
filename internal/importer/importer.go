@@ -434,11 +434,18 @@ func (a *assembler) mirror(frags []agents.Fragment, synthIfaces []spec.Interface
 
 	for _, p := range a.inv.Packages {
 		f := byDir[p.Dir]
+		var invs []spec.Invariant
+		for _, invStr := range f.Invariants {
+			invStr = strings.TrimSpace(invStr)
+			if invStr != "" && invStr != "{}" {
+				invs = append(invs, spec.Invariant{Statement: invStr})
+			}
+		}
 		m := spec.Module{
 			Name:        ModuleName(p.Dir),
 			Intent:      strings.TrimSpace(f.Intent),
 			Interface:   f.Operations,
-			Invariants:  f.Invariants,
+			Invariants:  invs,
 			Scenarios:   f.Scenarios,
 			Constraints: f.Constraints,
 		}
