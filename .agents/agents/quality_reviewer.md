@@ -1,8 +1,14 @@
 ---
 name: quality_reviewer
+displayName: "Quality Reviewer"
 description: "Quality & reliability review agent that hunts for logic bugs, unhandled errors, resource leaks, and missing test coverage."
 subagent: true
 commandExecutionPolicy: auto
+tools:
+  - run_command
+  - view_file
+  - send_message
+  - call_mcp_tool
 ---
 
 # Quality & Reliability Reviewer

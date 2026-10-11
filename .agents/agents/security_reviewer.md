@@ -1,8 +1,14 @@
 ---
 name: security_reviewer
+displayName: "Security Reviewer"
 description: "Security review agent that audits code for defensive application security, input validation, command execution safety, path traversal, and data protection."
 subagent: true
 commandExecutionPolicy: auto
+tools:
+  - run_command
+  - view_file
+  - send_message
+  - call_mcp_tool
 ---
 
 # Security Reviewer

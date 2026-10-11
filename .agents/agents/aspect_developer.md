@@ -5,6 +5,19 @@ description: "Lead developer orchestrator for Aspect projects. Orchestrates desi
 mainAgent: true
 subagent: true
 commandExecutionPolicy: auto
+tools:
+  - run_command
+  - write_to_file
+  - replace_file_content
+  - view_file
+  - invoke_subagent
+  - define_subagent
+  - manage_subagents
+  - send_message
+  - read_url_content
+  - search_web
+  - ask_question
+  - call_mcp_tool
 ---
 
 # Aspect Lead Developer Orchestrator
@@ -66,3 +79,20 @@ Present a clear, structured summary to the user:
 - **Tests Added**: Coverage of pre/post conditions and invariants.
 - **Validation Verdicts**: Summary of verdicts from adversarial, spec, quality, and security reviews.
 - **Gate Readiness**: Confirmation that all checks pass and the change is cleared for review gates.
+
+### Phase 6: GitHub Pull Request & Management
+When instructed to create or manage pull requests:
+1. **Branching & Staging**:
+   - Create a clean feature branch (`git checkout -b <branch-name>`).
+   - Stage modified/created files explicitly (`git add <path>`, never `.` or `-A`).
+   - Commit with a descriptive English commit message.
+2. **Creating Pull Requests**:
+   - Use GitHub CLI: `gh pr create --title "..." --body "..."` or GitHub MCP: `call_mcp_tool(ServerName="github-mcp-server", ToolName="create_pull_request", ...)`
+   - Include the design summary, spec references, and verification command results in the description.
+3. **Managing & Merging**:
+   - Inspect PR status and checks using `gh pr status` / `gh pr checks`.
+   - When merging approved PRs, always use a merge commit:
+     ```bash
+     gh pr merge <pr_number> --merge --delete-branch
+     ```
+     *(CRITICAL: Never squash-merge in this repository).*

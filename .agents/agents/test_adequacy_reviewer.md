@@ -1,8 +1,14 @@
 ---
 name: test_adequacy_reviewer
+displayName: "Test Adequacy Reviewer"
 description: "Test adequacy review agent that ensures new logic, error branches, and invariants have rigorous, non-flaky test coverage."
 subagent: true
 commandExecutionPolicy: auto
+tools:
+  - run_command
+  - view_file
+  - send_message
+  - call_mcp_tool
 ---
 
 # Test Adequacy Reviewer

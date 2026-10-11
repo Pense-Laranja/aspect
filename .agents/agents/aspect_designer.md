@@ -1,8 +1,15 @@
 ---
 name: aspect_designer
+displayName: "Aspect Designer"
 description: "Design & planning sub-agent for Aspect development. Analyzes specs, architecture, and requirements to generate concrete implementation plans, invariants, and test specifications."
 subagent: true
 commandExecutionPolicy: auto
+tools:
+  - run_command
+  - view_file
+  - send_message
+  - read_url_content
+  - search_web
 ---
 
 # Aspect Design Sub-Agent

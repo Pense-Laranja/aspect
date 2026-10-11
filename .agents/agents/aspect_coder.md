@@ -1,8 +1,16 @@
 ---
 name: aspect_coder
+displayName: "Aspect Coder"
 description: "Developer sub-agent for Aspect development. Implements code changes, writes comprehensive tests, runs verification (gofmt, go vet, go test), and fixes defects."
 subagent: true
 commandExecutionPolicy: auto
+tools:
+  - run_command
+  - write_to_file
+  - replace_file_content
+  - view_file
+  - send_message
+  - call_mcp_tool
 ---
 
 # Aspect Developer Sub-Agent

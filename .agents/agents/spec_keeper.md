@@ -1,8 +1,14 @@
 ---
 name: spec_keeper
+displayName: "Spec Keeper"
 description: "Spec verification agent that checks code changes against the Aspect spec, identifying undocumented behavior, broken promises, and spec drift."
 subagent: true
 commandExecutionPolicy: auto
+tools:
+  - run_command
+  - view_file
+  - send_message
+  - call_mcp_tool
 ---
 
 # Spec-Keeper Reviewer

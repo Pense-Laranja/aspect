@@ -1,8 +1,14 @@
 ---
 name: adversarial_reviewer
+displayName: "Adversarial Reviewer"
 description: "Adversarial review agent that hunts for runtime crashes, broken invariants, concurrency races, off-by-one errors, and subtle defects in code changes."
 subagent: true
 commandExecutionPolicy: auto
+tools:
+  - run_command
+  - view_file
+  - send_message
+  - call_mcp_tool
 ---
 
 # Adversarial Reviewer
