@@ -34,6 +34,7 @@ Usage:
   aspect drift    <spec.yaml> [flags]  re-validate existing code against the spec without regenerating
   aspect inventory <dir> [flags]       deterministic inventory of an existing Go codebase (no model calls)
   aspect import   <dir> [flags]        recover a spec from an existing Go codebase
+  aspect check-invariants <dir> [flags] deterministic verification of code and architectural invariants
   aspect gate plan [flags]             which review agents apply to a change (JSON)
   aspect gate check <run-dir> [flags]  validate the agents' reports; exit 1 when the gates block
   aspect gate render <run-dir> [flags] the review result as a Markdown PR comment
@@ -122,6 +123,8 @@ func main() {
 		err = runInventory(path, os.Args[3:])
 	case "import":
 		err = runImport(path, os.Args[3:])
+	case "check-invariants":
+		err = runCheckInvariants(path, os.Args[3:])
 	case "gate":
 		err = runGate(path, os.Args[3:])
 	default:
@@ -516,4 +519,65 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func runCheckInvariants(dir string, args []string) error {
+	fs := flag.NewFlagSet("check-invariants", flag.ContinueOnError)
+	specPath := fs.String("spec", "", "spec file (default _aspect/aspect.yaml if present)")
+	asJSON := fs.Bool("json", false, "print violations as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var sp *spec.Spec
+	spPath := *specPath
+	if spPath == "" {
+		for _, cand := range []string{filepath.Join(dir, "_aspect", "aspect.yaml"), filepath.Join(dir, "aspect.yaml")} {
+			if fileExists(cand) {
+				spPath = cand
+				break
+			}
+		}
+	}
+	if spPath != "" && fileExists(spPath) {
+		var err error
+		sp, _, err = loadValidated(spPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not load spec %s: %v\n", spPath, err)
+		}
+	}
+
+	inv, err := analyze.Go(dir, analyze.Options{})
+	if err != nil {
+		return err
+	}
+
+	var allViolations []analyze.InvariantViolation
+	if sp != nil {
+		depViolations := analyze.VerifyModuleDependencies(inv, sp)
+		allViolations = append(allViolations, depViolations...)
+	}
+
+	codeViolations, err := analyze.CheckCodeInvariants(dir, nil)
+	if err != nil {
+		return err
+	}
+	allViolations = append(allViolations, codeViolations...)
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(allViolations)
+	}
+
+	if len(allViolations) == 0 {
+		fmt.Printf("ok: %d package(s) verified, 0 invariant violations\n", len(inv.Packages))
+		return nil
+	}
+
+	fmt.Printf("%d invariant violation(s) found:\n", len(allViolations))
+	for _, v := range allViolations {
+		fmt.Printf("  %s\n", v)
+	}
+	return fmt.Errorf("%d invariant violation(s) detected", len(allViolations))
 }

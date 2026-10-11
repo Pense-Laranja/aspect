@@ -61,10 +61,18 @@ out:  .review/<run-id>/quality-reviewer.json
 2. Run `git diff <base>...<head>` via Bash to inspect the changes.
 3. List touched files and identify which are implementation files and which are
    tests.
-4. Run existing tests with Bash: `go test -v ./...` (or equivalent test runner).
+4. Read the touched module invariants in `_aspect/modules/<module>.yaml` (from `modules:`
+   in the change block, or by matching directory name). If `spec: none`, read
+   `CLAUDE.md` key patterns.
+5. Run existing tests with Bash: `go test -v ./...` (or equivalent test runner).
 
 ### Phase 2: Correctness & Reliability Checklist
 For each modified function, method, and loop:
+- [ ] **System Quality & Architecture Invariants:**
+      - **Boot Seed Immutability:** Do seed functions only insert missing records (`FirstOrCreate` / `Insert`), never updating, overwriting, or deleting existing rows?
+      - **Staging Safety:** Are any newly registered background jobs explicitly decided in `stagingJobs` or `StagingHeldJobNames`?
+      - **Soft-Delete Provenance:** Does every soft-delete mutation record `deleted_by`?
+      - **Callback Decoupling:** Are cross-module lifecycle hooks using callback registries rather than direct circular imports?
 - [ ] **Boolean & Branch Logic:**
       - Are `if/else` conditions correct? Are inverted flags (`!flag`), `&&` vs
         `||`, or short-circuit evaluations behaving as intended?

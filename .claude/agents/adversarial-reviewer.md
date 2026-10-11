@@ -71,6 +71,11 @@ Follow this procedure in strict order:
 ### Phase 2: Systematic Attack Checklist
 For each function or method modified in the diff, run through this concrete
 checklist:
+- [ ] **Domain Correctness & Spec Invariants:**
+      - **Payment & Charge Invariants:** Can an order ever carry more than one live charge? Does replacing a charge cancel the previous one at the issuing environment? Can an order be placed without a valid payment method?
+      - **Transactional Atomicity:** Are multi-entity mutations (e.g. order placement + buyer enrollment) enclosed in the same database transaction?
+      - **Idempotency & Double Actions:** Can webhook retries or duplicate button clicks create duplicate orders, subscriptions, charges, or background jobs?
+      - **Vue Template Inertness (`v-pre`):** Can user-supplied or dynamic strings reach a Vue-compiled template without `v-pre`?
 - [ ] **Nil / Null Dereference:** Can any pointer, interface, slice, map, or
       callback be nil when dereferenced? Did a new code path omit a nil check?
 - [ ] **Boundary Numbers & Collections:** What happens with:

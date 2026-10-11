@@ -19,6 +19,7 @@ out:  .review/<run-id>/<agent>.json
 ```
 
 Optional extras: `files:` (the changed paths that made your gate apply),
+`modules:` (the touched spec modules with their declared invariants and goals, from `plan.json`),
 `handoff:` (a report from another agent that asked for you), and `pr:` (the
 PR description).
 
@@ -138,6 +139,13 @@ or traced hop by hop with line numbers, is at least `high` with confidence of
 at least 0.8. Rating a proven, user-visible defect `medium` hides it: medium
 only warns. If you cannot reach that bar, say what is unproven and lower the
 confidence, not the severity.
+
+**Invariant Floor.** An invariant is a non-negotiable property stated in the spec
+(`module.invariants`) or repository architecture rules. Any finding proving a
+violation of an explicit spec invariant, module boundary, or repository architecture
+mandate is automatically at least **`high`** severity (blocking) with confidence
+$\ge 0.8$, and must cite the invariant in `spec_ref` (e.g. `checkout.INV-CHARGE-ONCE`
+or `checkout.invariants[2]`).
 
 ## 4. Evidence
 
