@@ -19,6 +19,7 @@ whether the result achieves the spec's stated goals. Go module
 - `internal/gate` — review gates: which agents apply to a diff, report validation, pass/warn/block, PR comment. Pure Go, no model, no git.
 - `cmd/aspect` — CLI: `validate`, `expand`, `split`, `plan`, `run`, `drift`, `inventory`, `import`, `gate`.
 - `.claude/agents`, `.claude/review`, `.claude/commands` — the review agents, their shared protocol, report schema and `gates.yaml`, and the `/review` and `/implement` commands. See `docs/design.md`.
+- `.agents/` — Antigravity multi-agent suite: `aspect_developer` orchestrator, `aspect_designer`, `aspect_coder`, and validation review subagents with GitHub PR management.
 - `examples/` — reference specs; CI validates them.
 - `docs/` — architecture and spec format.
 
