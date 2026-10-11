@@ -1,5 +1,6 @@
 ---
 name: aspect_developer
+displayName: "Aspect Developer"
 description: "Lead developer orchestrator for Aspect projects. Orchestrates design (planning), developer (code & tests), and validation subagents (adversarial, spec-keeper, quality, security, test-adequacy) to produce review-gate-cleared changes."
 mainAgent: true
 subagent: true
