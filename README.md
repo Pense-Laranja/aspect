@@ -225,8 +225,8 @@ aspect gate extract -o .review/run/<agent>.json <transcript>  # extracts verbati
 
 Aspect review gates can be executed via three environments:
 
-1. **Local LLM Engine (`aspect-code-reviewer` / `aspect-review`):**
-   Runs completely locally on Apple Silicon / Metal via Ollama using `qwen2.5-coder:32b` with **zero Anthropic API calls**:
+1. **Gemini Review Engine (`aspect-code-reviewer` / `aspect-review`):**
+   Runs via Google Gemini (`gemini-flash-latest` or configured model) with high throughput:
    - As an MCP server in **Claude Desktop** (exposing `review_with_aspect_gates` and `run_single_aspect_agent`).
    - Via CLI: `aspect-review gates --repo . --base origin/main [--publish]`.
    - As automated merge guards: `pre-merge-commit` git hook or `tools/gate-pr.sh`.
@@ -264,7 +264,7 @@ Active development. What exists today:
 - `aspect inventory` and `aspect import`: recover a spec from a Go codebase,
   optionally split into tiers and re-expressed for Swift/iOS.
 - Multi-agent review gate engine with 15+ specialized gate and advisory personas.
-- Local LLM review integration (Ollama / Qwen 2.5 Coder 32B) via Model Context Protocol (MCP) and CLI with zero API billing.
+- Gemini review engine integration via Model Context Protocol (MCP) and CLI.
 - Expanded review categories: readability, consistency, observability, contract, i18n.
 - Tests run offline against fake clients, including end-to-end pipeline
   tests that exercise a real repair round through the Go toolchain and a

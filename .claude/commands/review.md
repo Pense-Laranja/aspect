@@ -1,18 +1,18 @@
 ---
-description: Run the Aspect review gates locally via Qwen, automatically gating PR merges with zero Anthropic API calls.
+description: Run the Aspect review gates via Gemini, automatically gating PR merges.
 argument-hint: "[base-ref, default origin/main]"
 ---
 
-Run the Aspect review gates on this branch using the local Qwen 2.5 Coder multi-agent review engine.
+Run the Aspect review gates on this branch using the Gemini multi-agent review engine.
 
 Follow these steps:
 
 1. **Base Reference:** Determine the base branch: `$ARGUMENTS` (defaults to `origin/main` if omitted).
 
-2. **Run Local Review Gates:**
+2. **Run Review Gates:**
    - **In Claude Desktop (MCP):** Call the tool:
      `review_with_aspect_gates(repo_path=".", base_ref="<base-ref>", publish_to_pr=True)`
-     This executes all applicable review agents locally on Qwen 2.5 Coder (`adversarial-reviewer`, `security-reviewer`, `red-team`, `quality-reviewer`, `consistency-reviewer`, `readability-reviewer`, `design-reviewer`, `architect`, `spec-keeper`) without Anthropic API billing.
+     This executes all applicable review agents on Gemini (`adversarial-reviewer`, `security-reviewer`, `red-team`, `quality-reviewer`, `consistency-reviewer`, `readability-reviewer`, `design-reviewer`, `architect`, `spec-keeper`).
    - **In Claude Code / Terminal:** Run via Bash:
      `aspect-review gates --repo . --base <base-ref>`
      (or `.claude/review/run.sh --publish <base-ref>`)
