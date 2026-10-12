@@ -8,8 +8,8 @@ When developing in this repository or implementing Aspect changes:
 
 2. **Separation of Author and Judge**:
    - Planning is performed by the design sub-agent (`aspect_designer`).
-   - Implementation and test coding is performed by the developer sub-agent (`aspect_coder`).
-   - Validation is performed by dedicated review subagents (`adversarial_reviewer`, `spec_keeper`, `quality_reviewer`, `security_reviewer`, `test_adequacy_reviewer`).
+   - Implementation and test coding is performed collaboratively by the developer sub-agent (`aspect_coder`) and test designer sub-agent (`aspect_test_designer`).
+   - Validation is performed by dedicated review subagents (`test_evaluator`, `adversarial_reviewer`, `spec_keeper`, `quality_reviewer`, `security_reviewer`, `test_adequacy_reviewer`).
    - An author never reviews their own work; validation agents evaluate the change objectively.
 
 3. **Mandatory Verification**:
@@ -23,6 +23,7 @@ When developing in this repository or implementing Aspect changes:
    go run ./cmd/aspect gate plan
    ```
 
-4. **Zero-Defect Review Gate Clearance**:
-   - All validation subagents must return clean verdicts.
+4. **Zero-Defect & Comprehensive Test Gate Clearance**:
+   - All validation subagents including `test_evaluator` must return clean verdicts.
+   - Functional tests must be present, unit coverage adequate, and tests efficient and regression-proof.
    - Any critical or high finding must be remediated with automated regression tests before the task is considered done.

@@ -39,11 +39,12 @@ Whenever the user asks you to implement a feature, bugfix, refactoring, or spec-
    - Comprehensive test strategy (pre-conditions, post-conditions, invariants).
 4. Review the design blueprint before proceeding.
 
-### Phase 2: Implementation & Verification (`aspect_coder`)
-1. Invoke the `aspect_coder` sub-agent with the approved design plan.
-2. The developer will:
-   - Implement the necessary types, functions, and logic cleanly.
-   - Write comprehensive unit and integration tests covering both happy and failure paths.
+### Phase 2: Implementation & Collaborative Test Design (`aspect_coder` & `aspect_test_designer`)
+1. Invoke the `aspect_test_designer` sub-agent to collaborate with `aspect_coder`:
+   - `aspect_test_designer` establishes the detailed test plan: decomposes requirements into Given/When/Then scenarios, maps pre/post-conditions, designs invariant violation tests, boundary matrices, and functional integration specs.
+2. Invoke `aspect_coder` to implement the code and tests based on the design blueprint and test plan:
+   - Implement production types, functions, and logic cleanly.
+   - Write comprehensive unit and functional tests covering happy paths, edge cases, and failure modes.
    - Maintain repository integrity: English documentation, explicit file staging, and zero network calls in tests.
    - Run verification commands:
      ```bash
@@ -54,11 +55,12 @@ Whenever the user asks you to implement a feature, bugfix, refactoring, or spec-
 
 ### Phase 3: Multi-Perspective Validation
 Run the applicable validation subagents concurrently or sequentially:
+- **`test_evaluator`**: Evaluates test design and quality: checks if functional tests are present, if unit test coverage is sufficient across all branches, if tests are efficient (no slow sleeps, clean parallelization), and if assertions genuinely guarantee code correctness and quality.
 - **`adversarial_reviewer`**: Tries to break the change. Looks for nil dereferences, unhandled boundaries, off-by-one errors, concurrency races, and deadlocks.
 - **`spec_keeper`**: Verifies whether the implementation remains in lockstep with the Aspect spec, identifying undocumented behavior or broken promises.
 - **`quality_reviewer`**: Checks for swallowed errors, resource leaks, idiomatic Go conventions, and maintainability.
 - **`security_reviewer`**: Audits for untrusted input handling, path traversal, command injection, and data leakage.
-- **`test_adequacy_reviewer`**: Evaluates whether all modified branches, error conditions, and edge cases have rigorous, non-flaky automated tests.
+- **`test_adequacy_reviewer`**: Evaluates test coverage rigor and boundary assertions.
 
 Run local gate checks where applicable:
 ```bash
@@ -66,11 +68,11 @@ go run ./cmd/aspect gate plan
 ```
 
 ### Phase 4: Remediation Loop
-1. If any validation agent finds blocking issues (critical, high, or contract violations):
-   - Send the findings and reproduction details to `aspect_coder`.
-   - `aspect_coder` fixes the defects and adds automated regression tests.
+1. If any validation agent or `test_evaluator` finds blocking issues, coverage deficiencies, or defects:
+   - Send findings, test gaps, and reproduction details to `aspect_coder` and `aspect_test_designer`.
+   - `aspect_coder` fixes the defects and adds required automated tests.
    - Re-run verification commands and re-validate.
-2. Continue until all blocking issues are resolved.
+2. Continue until all blocking issues and test evaluation criteria are resolved.
 
 ### Phase 5: Final Summary
 Present a clear, structured summary to the user:

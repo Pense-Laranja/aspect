@@ -12,21 +12,23 @@ Use this workflow whenever implementing features, bugfixes, or refactors in Aspe
 ```mermaid
 flowchart TD
     User([User Request]) --> Lead[aspect_developer: Orchestrator]
-    Lead --> Designer[aspect_designer: Formulate Blueprint]
+    Lead --> Designer[aspect_designer: Blueprint & Invariants]
     Designer --> PlanReady[Design Plan & Contracts]
-    PlanReady --> Coder[aspect_coder: Code & Tests]
+    PlanReady --> TestPlan[aspect_test_designer: Test Scenarios & Plan]
+    TestPlan --> Coder[aspect_coder: Code & Tests Implementation]
     Coder --> Verify[Run Build & go test -race]
     Verify --> Reviewers[Validation Subagents]
     subgraph Reviewers [Multi-Perspective Validation]
         direction TB
-        Adv[adversarial_reviewer]
-        Spec[spec_keeper]
-        Qual[quality_reviewer]
-        Sec[security_reviewer]
-        Adeq[test_adequacy_reviewer]
+        TestEval[test_evaluator: Test Quality & Functional Check]
+        Adv[adversarial_reviewer: Crash & Race Hunter]
+        Spec[spec_keeper: Spec Alignment]
+        Qual[quality_reviewer: Code Reliability]
+        Sec[security_reviewer: AppSec Audit]
+        Adeq[test_adequacy_reviewer: Coverage Rigor]
     end
-    Reviewers --> Decisions{Any Blocking Findings?}
-    Decisions -- Yes --> Fix[aspect_coder: Fix & Regression Tests]
+    Reviewers --> Decisions{Any Blocking Findings or Test Deficiencies?}
+    Decisions -- Yes --> Fix[aspect_coder & aspect_test_designer: Fix & Strengthen Tests]
     Fix --> Verify
     Decisions -- No --> GatePass[Gate Ready / Cleared]
     GatePass --> Summary[Deliver Verified Result to User]
@@ -38,9 +40,10 @@ Invoke `aspect_designer`:
 - Define target files, data models, function signatures, pre/post conditions, and invariants.
 - Outline test scenarios (happy path, error cases, invariant violation attempts).
 
-## Step 2: Code Implementation
-Invoke `aspect_coder`:
-- Write the code and tests matching the blueprint.
+## Step 2: Collaborative Code & Test Implementation
+Invoke `aspect_test_designer` and `aspect_coder`:
+- `aspect_test_designer`: formulate the comprehensive test plan, Given/When/Then scenarios, invariant tests, and boundary matrices.
+- `aspect_coder`: write production code and tests matching the blueprint and test plan.
 - Enforce Go standards and English documentation.
 - Execute:
   ```bash
@@ -49,6 +52,7 @@ Invoke `aspect_coder`:
 
 ## Step 3: Multi-Agent Validation
 Invoke the review subagents:
+- `test_evaluator`: evaluates test design, verifies functional test presence, unit test coverage adequacy, test efficiency, and quality guarantees.
 - `adversarial_reviewer`: hunts for crashes, concurrency races, off-by-one errors.
 - `spec_keeper`: checks spec alignment and drift.
 - `quality_reviewer`: checks error handling and resource cleanup.
@@ -56,9 +60,9 @@ Invoke the review subagents:
 - `test_adequacy_reviewer`: confirms non-flaky test coverage for all new paths.
 
 ## Step 4: Remediation Loop
-If any finding has severity `critical` or `high`:
-- Pass findings to `aspect_coder` to remediate and add regression tests.
-- Re-run verification until all blocking findings are resolved.
+If any finding has severity `critical`, `high`, or test coverage is inadequate:
+- Pass findings to `aspect_coder` and `aspect_test_designer` to remediate and add automated tests.
+- Re-run verification until all gates and test evaluations are cleared.
 
 ## Step 5: Deliver Result
 Present the verified change, tests run, and validation verdicts to the user.
