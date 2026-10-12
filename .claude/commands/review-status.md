@@ -14,7 +14,7 @@ Follow these steps based on arguments and environment:
 2. **In Claude Desktop (MCP):**
    - **Status Check:** Call the MCP tool:
      `get_review_status()`
-     This displays in-progress review runs, which reviewer agents are running on local Qwen (`qwen2.5-coder:32b`), elapsed duration, completed reviewers, and blocker tallies.
+     This displays in-progress review runs, which reviewer agents are running on Gemini (`gemini-flash-latest`), elapsed duration, completed reviewers, and blocker tallies.
    - **Open Live Panel:** If the user requested the panel (`/review-status panel`) or wants continuous auto-refresh:
      Call the MCP tool:
      `open_review_panel()`
