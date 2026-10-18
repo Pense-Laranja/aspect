@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -221,9 +222,13 @@ func (e *Engine) gatesPath(repo string) string {
 	return p
 }
 
+// runDirPrefix names the engine's runs: .review/local-<UTC timestamp>, which
+// sort by name in the order they were made (LoadRuns, findCachedRun).
+const runDirPrefix = "local-"
+
 // newRunDir creates .review/local-<UTC timestamp>, numbered when taken.
 func (e *Engine) newRunDir(repo string) (string, string, error) {
-	base := "local-" + e.now().UTC().Format("20060102T150405Z")
+	base := runDirPrefix + e.now().UTC().Format("20060102T150405Z")
 	if err := os.MkdirAll(filepath.Join(repo, ".review"), 0o755); err != nil {
 		return "", "", err
 	}
@@ -409,6 +414,10 @@ func (e *Engine) publish(ctx context.Context, repo, dir, pr string) string {
 
 var prInBranch = regexp.MustCompile(`(?i)(?:PR\s*#?|pr-?|-pr)(\d+)`)
 
+// prLookupTimeout bounds finding the pull request: a stalled GitHub falls
+// back to the branch name instead of holding the review.
+const prLookupTimeout = 20 * time.Second
+
 // detectPR finds the pull request under review: the one numbered pr or the
 // branch's open one, else a number in the branch name.
 func (e *Engine) detectPR(ctx context.Context, repo, branch, pr string) PullRequest {
@@ -416,7 +425,9 @@ func (e *Engine) detectPR(ctx context.Context, repo, branch, pr string) PullRequ
 	if find == nil {
 		find = ghFindPR
 	}
-	found, ok := find(ctx, repo, pr)
+	lctx, cancel := context.WithTimeout(ctx, prLookupTimeout)
+	defer cancel()
+	found, ok := find(lctx, repo, pr)
 	if !ok {
 		found = PullRequest{Number: pr}
 	}
@@ -426,7 +437,7 @@ func (e *Engine) detectPR(ctx context.Context, repo, branch, pr string) PullRequ
 		}
 	}
 	if found.Number != "" && found.URL == "" {
-		if slug := githubSlug(ctx, repo); slug != "" {
+		if slug := originSlug(ctx, repo); slug != "" {
 			found.URL = fmt.Sprintf("https://github.com/%s/pull/%s", slug, found.Number)
 		}
 	}
@@ -443,46 +454,65 @@ type ghPR struct {
 	Body    string      `json:"body"`
 }
 
+func (v ghPR) pullRequest(url string) PullRequest {
+	return PullRequest{Number: v.Number.String(), URL: url, Title: strings.TrimSpace(v.Title), Body: strings.TrimSpace(v.Body)}
+}
+
+var prNumber = regexp.MustCompile(`^[0-9]+$`)
+
 // ghFindPR asks the GitHub CLI: `gh pr view`, else the REST API, which a
-// proxy that refuses GraphQL (a cloud session's) still answers.
+// proxy that refuses GraphQL (a cloud session's) still answers. A pr that is
+// not a number is never looked up.
 func ghFindPR(ctx context.Context, repo, pr string) (PullRequest, bool) {
+	if pr != "" && !prNumber.MatchString(pr) {
+		return PullRequest{}, false
+	}
+	if p, ok := ghViewPR(ctx, repo, pr); ok {
+		return p, true
+	}
+	return ghAPIPR(ctx, repo, pr)
+}
+
+func ghViewPR(ctx context.Context, repo, pr string) (PullRequest, bool) {
 	args := []string{"pr", "view"}
 	if pr != "" {
 		args = append(args, pr)
 	}
+	out, err := ghOutput(ctx, repo, append(args, "--json", "number,url,title,body")...)
 	var v ghPR
-	if out, err := ghOutput(ctx, repo, append(args, "--json", "number,url,title,body")...); err == nil && json.Unmarshal(out, &v) == nil && v.Number != "" {
-		return PullRequest{Number: v.Number.String(), URL: v.URL, Title: strings.TrimSpace(v.Title), Body: strings.TrimSpace(v.Body)}, true
+	if err != nil || json.Unmarshal(out, &v) != nil || v.Number == "" {
+		return PullRequest{}, false
 	}
-	slug := remoteSlug(ctx, repo)
+	return v.pullRequest(v.URL), true
+}
+
+// ghAPIPR reads the pull request numbered pr, or the open one whose head is
+// the current branch, from the REST API.
+func ghAPIPR(ctx context.Context, repo, pr string) (PullRequest, bool) {
+	slug := originSlug(ctx, repo)
 	if slug == "" {
 		return PullRequest{}, false
 	}
-	path := "repos/" + slug + "/pulls/" + pr
-	if pr == "" {
-		branch, err := gitx.Run(ctx, repo, "branch", "--show-current")
-		if err != nil || branch == "" {
+	if pr != "" {
+		out, err := ghOutput(ctx, repo, "api", "repos/"+slug+"/pulls/"+pr)
+		var v ghPR
+		if err != nil || json.Unmarshal(out, &v) != nil || v.Number == "" {
 			return PullRequest{}, false
 		}
-		owner, _, _ := strings.Cut(slug, "/")
-		path = "repos/" + slug + "/pulls?state=open&head=" + owner + ":" + branch
+		return v.pullRequest(v.HTMLURL), true
 	}
-	out, err := ghOutput(ctx, repo, "api", path)
-	if err != nil {
+	branch, err := gitx.Run(ctx, repo, "branch", "--show-current")
+	if err != nil || branch == "" {
 		return PullRequest{}, false
 	}
-	if pr == "" {
-		var list []json.RawMessage
-		if json.Unmarshal(out, &list) != nil || len(list) == 0 {
-			return PullRequest{}, false
-		}
-		out = list[0]
-	}
-	v = ghPR{}
-	if json.Unmarshal(out, &v) != nil || v.Number == "" {
+	owner, _, _ := strings.Cut(slug, "/")
+	query := url.Values{"state": {"open"}, "head": {owner + ":" + branch}}.Encode()
+	out, err := ghOutput(ctx, repo, "api", "repos/"+slug+"/pulls?"+query)
+	var list []ghPR
+	if err != nil || json.Unmarshal(out, &list) != nil || len(list) == 0 || list[0].Number == "" {
 		return PullRequest{}, false
 	}
-	return PullRequest{Number: v.Number.String(), URL: v.HTMLURL, Title: strings.TrimSpace(v.Title), Body: strings.TrimSpace(v.Body)}, true
+	return list[0].pullRequest(list[0].HTMLURL), true
 }
 
 func ghOutput(ctx context.Context, repo string, args ...string) ([]byte, error) {
@@ -491,31 +521,17 @@ func ghOutput(ctx context.Context, repo string, args ...string) ([]byte, error) 
 	return cmd.Output()
 }
 
-// remoteSlug is owner/name of the origin remote, read off its URL's last two
+// originSlug is owner/name of the origin remote, read off its URL's last two
 // path segments: a GitHub URL, or a proxy's URL that ends the same way.
-func remoteSlug(ctx context.Context, repo string) string {
-	url, err := gitx.Run(ctx, repo, "remote", "get-url", "origin")
+func originSlug(ctx context.Context, repo string) string {
+	u, err := gitx.Run(ctx, repo, "remote", "get-url", "origin")
 	if err != nil {
 		return ""
 	}
-	if m := remoteTail.FindStringSubmatch(strings.TrimSpace(url)); m != nil {
+	if m := remoteTail.FindStringSubmatch(strings.TrimSpace(u)); m != nil {
 		return m[1]
 	}
 	return ""
 }
 
 var remoteTail = regexp.MustCompile(`[/:]([^/:\s]+/[^/:\s]+?)(?:\.git)?/?$`)
-
-var githubRemote = regexp.MustCompile(`github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$`)
-
-// githubSlug is owner/name of the repository's GitHub origin, or "".
-func githubSlug(ctx context.Context, repo string) string {
-	url, err := gitx.Run(ctx, repo, "remote", "get-url", "origin")
-	if err != nil {
-		return ""
-	}
-	if m := githubRemote.FindStringSubmatch(strings.TrimSpace(url)); m != nil {
-		return m[1]
-	}
-	return ""
-}

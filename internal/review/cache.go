@@ -31,7 +31,7 @@ func (e *Engine) findCachedRun(ctx context.Context, repo string, plan *gate.Plan
 			}
 		}
 	}
-	dirs, _ := filepath.Glob(filepath.Join(reviewDir, "local-*"))
+	dirs, _ := filepath.Glob(filepath.Join(reviewDir, runDirPrefix+"*"))
 	slices.Sort(dirs)
 	slices.Reverse(dirs)
 	for _, d := range dirs {

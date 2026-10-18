@@ -541,7 +541,7 @@ func TestAReusedRunIsPublishedWhenNoPRIsFound(t *testing.T) {
 	}
 }
 
-func TestRemoteSlug(t *testing.T) {
+func TestOriginSlug(t *testing.T) {
 	repo := testRepo(t)
 	for url, want := range map[string]string{
 		"https://github.com/Pense-Laranja/gordpress.git":                 "Pense-Laranja/gordpress",
@@ -551,8 +551,152 @@ func TestRemoteSlug(t *testing.T) {
 	} {
 		gitIn(t, repo, "remote", "remove", "origin")
 		gitIn(t, repo, "remote", "add", "origin", url)
-		if got := remoteSlug(context.Background(), repo); got != want {
-			t.Errorf("remoteSlug(%s) = %q, want %q", url, got, want)
+		if got := originSlug(context.Background(), repo); got != want {
+			t.Errorf("originSlug(%s) = %q, want %q", url, got, want)
 		}
+	}
+}
+
+// fakeGH puts a `gh` first on PATH that logs its arguments and runs script.
+func fakeGH(t *testing.T, script string) string {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls")
+	writeFile(t, filepath.Join(dir, "gh"), "#!/bin/sh\necho \"$*\" >> "+log+"\n"+script)
+	if err := os.Chmod(filepath.Join(dir, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// A proxy that refuses GraphQL fails `gh pr view`; the REST API finds the
+// branch's open pull request (testRepo: origin github.com/example/repo,
+// branch feature).
+func TestGhFindPRFallsBackToTheRESTAPI(t *testing.T) {
+	repo := testRepo(t)
+	log := fakeGH(t, `case "$1" in
+pr) exit 1;;
+api) case "$2" in
+  */pulls/12) echo '{"number": 12, "html_url": "https://github.com/example/repo/pull/12", "url": "https://api.github.com/x", "title": "Twelve", "body": "B12"}';;
+  *) echo '[{"number": 7, "html_url": "https://github.com/example/repo/pull/7", "url": "https://api.github.com/y", "title": " T ", "body": "B"}]';;
+  esac;;
+esac`)
+	pr, ok := ghFindPR(context.Background(), repo, "")
+	if !ok || pr.Number != "7" || pr.URL != "https://github.com/example/repo/pull/7" || pr.Title != "T" || pr.Body != "B" {
+		t.Fatalf("pr = %+v, %v", pr, ok)
+	}
+	calls, _ := os.ReadFile(log)
+	if !strings.Contains(string(calls), "api repos/example/repo/pulls?head=example%3Afeature&state=open") {
+		t.Errorf("calls:\n%s", calls)
+	}
+	pr, ok = ghFindPR(context.Background(), repo, "12")
+	if !ok || pr.Number != "12" || pr.URL != "https://github.com/example/repo/pull/12" || pr.Title != "Twelve" {
+		t.Fatalf("explicit pr = %+v, %v", pr, ok)
+	}
+	if _, ok := ghFindPR(context.Background(), repo, "1/../../users/octocat"); ok {
+		t.Error("a pr that is not a number was looked up")
+	}
+	if strings.Contains(readFile(t, log), "octocat") {
+		t.Error("gh was called with a pr that is not a number")
+	}
+}
+
+func TestGhFindPREscapesTheBranchAndFindsNothingInAnEmptyList(t *testing.T) {
+	repo := testRepo(t)
+	gitIn(t, repo, "checkout", "-q", "-b", "x&head=other")
+	log := fakeGH(t, `case "$1" in pr) exit 1;; api) echo '[]';; esac`)
+	if pr, ok := ghFindPR(context.Background(), repo, ""); ok {
+		t.Fatalf("an empty list found %+v", pr)
+	}
+	if !strings.Contains(readFile(t, log), "head=example%3Ax%26head%3Dother&state=open") {
+		t.Errorf("the branch was not escaped:\n%s", readFile(t, log))
+	}
+}
+
+func TestGhFindPRPrefersGhPRView(t *testing.T) {
+	repo := testRepo(t)
+	log := fakeGH(t, `case "$1" in pr) echo '{"number": 3, "url": "https://github.com/example/repo/pull/3", "title": "Three", "body": ""}';; *) exit 1;; esac`)
+	pr, ok := ghFindPR(context.Background(), repo, "")
+	if !ok || pr.Number != "3" || pr.URL != "https://github.com/example/repo/pull/3" {
+		t.Fatalf("pr = %+v, %v", pr, ok)
+	}
+	if strings.Contains(readFile(t, log), "api ") {
+		t.Error("the REST API was asked although gh pr view answered")
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, _ := os.ReadFile(path)
+	return string(b)
+}
+
+func TestFindingsAreMostSevereFirst(t *testing.T) {
+	r := &RunSummary{RunID: "r", Findings: []FindingSummary{
+		{Severity: "low", Title: "LOW-ONE"}, {Severity: "critical", Title: "CRIT-ONE"}, {Severity: "medium", Title: "MED-ONE"},
+	}}
+	var b strings.Builder
+	PrintFindings(&b, r, "", "")
+	out := b.String()
+	if !(strings.Index(out, "CRIT-ONE") < strings.Index(out, "MED-ONE") && strings.Index(out, "MED-ONE") < strings.Index(out, "LOW-ONE")) {
+		t.Errorf("order:\n%s", out)
+	}
+	if !ValidSeverity("") || !ValidSeverity("HIGH") || ValidSeverity("hgih") {
+		t.Error("ValidSeverity")
+	}
+}
+
+func TestLoadRunPicksTheCurrentRunAndSkipsBrokenOnes(t *testing.T) {
+	repo := t.TempDir()
+	write := func(id, body string) { writeFile(t, filepath.Join(repo, ".review", id, "status.json"), body) }
+	write("local-20260101T000000Z", `{"run_id": "local-20260101T000000Z", "state": "completed", "outcome": "PASS"}`)
+	write("local-20260102T000000Z", `{"run_id": "local-20260102T000000Z", "state": "completed", "outcome": "BLOCK"}`)
+	write("local-20260103T000000Z", `{"run_id": "local-20260103T000000Z", "pr": 43}`) // not this engine's types
+	writeFile(t, filepath.Join(repo, ".review", "current_run.json"), `{"run_id": "local-20260101T000000Z"}`)
+
+	if r, err := LoadRun(repo, ""); err != nil || r.RunID != "local-20260101T000000Z" {
+		t.Fatalf("current run = %v, %v", r, err)
+	}
+	runs, err := LoadRuns(repo, 0)
+	if err != nil || len(runs) != 2 || runs[0].RunID != "local-20260102T000000Z" {
+		t.Fatalf("a broken run hides the others: %v, %v", runs, err)
+	}
+	if runs, _ := LoadRuns(repo, 1); len(runs) != 1 {
+		t.Errorf("limit 1 gave %d runs", len(runs))
+	}
+	// current_run.json names a run that was deleted: the newest readable run.
+	os.RemoveAll(filepath.Join(repo, ".review", "local-20260101T000000Z"))
+	if r, err := LoadRun(repo, ""); err != nil || r.RunID != "local-20260102T000000Z" {
+		t.Fatalf("after deleting the current run = %v, %v", r, err)
+	}
+}
+
+func TestCompareShowsAnAgentMissingFromOneRun(t *testing.T) {
+	a := &RunSummary{RunID: "a", Agents: map[string]AgentSummary{
+		"red-team": {Mode: "gate", State: "completed", FindingsCount: 1},
+		"i18n":     {Mode: "gate", State: "failed"},
+	}}
+	b := &RunSummary{RunID: "b", Agents: map[string]AgentSummary{
+		"red-team": {Mode: "gate", State: "completed", FindingsCount: 3, BlockersCount: 1},
+		"i18n":     {Mode: "gate", State: "completed"},
+		"new-one":  {Mode: "gate", State: "completed", FindingsCount: 2},
+	}}
+	var out strings.Builder
+	PrintCompare(&out, a, b)
+	lines := map[string]string{}
+	for _, l := range strings.Split(out.String(), "\n") {
+		if f := strings.Fields(l); len(f) > 0 {
+			lines[f[0]] = strings.Join(f[1:], " ")
+		}
+	}
+	if lines["red-team"] != "1 (0 blk) 3 (1 blk) +2" {
+		t.Errorf("red-team: %q", lines["red-team"])
+	}
+	if lines["new-one"] != "- 2 (0 blk)" {
+		t.Errorf("an agent run A did not plan: %q", lines["new-one"])
+	}
+	if lines["i18n"] != "failed 0 (0 blk)" {
+		t.Errorf("an agent that failed in run A: %q", lines["i18n"])
 	}
 }

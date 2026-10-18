@@ -68,31 +68,34 @@ type FindingSummary struct {
 }
 
 // LoadRun reads one run of the repository: the run named, else the one
-// current_run.json names, else the newest.
+// current_run.json names (while its directory exists), else the newest
+// local run.
 func LoadRun(repo, runID string) (*RunSummary, error) {
 	reviewDir := filepath.Join(repo, ".review")
-	if runID == "" {
-		var cur struct {
-			RunID string `json:"run_id"`
+	if runID != "" {
+		if filepath.Base(runID) != runID || strings.HasPrefix(runID, ".") {
+			return nil, fmt.Errorf("%q is not a run id", runID)
 		}
-		if b, err := os.ReadFile(filepath.Join(reviewDir, "current_run.json")); err == nil && json.Unmarshal(b, &cur) == nil {
-			runID = cur.RunID
+		return loadRunDir(filepath.Join(reviewDir, runID))
+	}
+	var cur struct {
+		RunID string `json:"run_id"`
+	}
+	if b, err := os.ReadFile(filepath.Join(reviewDir, "current_run.json")); err == nil && json.Unmarshal(b, &cur) == nil &&
+		cur.RunID != "" && filepath.Base(cur.RunID) == cur.RunID && !strings.HasPrefix(cur.RunID, ".") {
+		r, err := loadRunDir(filepath.Join(reviewDir, cur.RunID))
+		if !errors.Is(err, os.ErrNotExist) {
+			return r, err
 		}
 	}
-	if runID == "" {
-		runs, err := LoadRuns(repo, 1)
-		if err != nil {
-			return nil, err
-		}
-		if len(runs) == 0 {
-			return nil, fmt.Errorf("no review runs in %s", reviewDir)
-		}
-		return runs[0], nil
+	runs, err := LoadRuns(repo, 1)
+	if err != nil {
+		return nil, err
 	}
-	if filepath.Base(runID) != runID || strings.HasPrefix(runID, ".") {
-		return nil, fmt.Errorf("%q is not a run id", runID)
+	if len(runs) == 0 {
+		return nil, fmt.Errorf("no review runs in %s", reviewDir)
 	}
-	return loadRunDir(filepath.Join(reviewDir, runID))
+	return runs[0], nil
 }
 
 func loadRunDir(dir string) (*RunSummary, error) {
@@ -110,9 +113,13 @@ func loadRunDir(dir string) (*RunSummary, error) {
 	return &r, nil
 }
 
-// LoadRuns lists the repository's runs, newest first, at most limit (0: all).
+// LoadRuns lists the repository's local runs (.review/local-<UTC timestamp>,
+// as Engine.Run names them), newest first by name, at most limit (0: all).
+// A run whose status.json cannot be read is skipped, with a warning on
+// stderr, so one broken run does not hide the others. Runs recorded under
+// other ids are read only by LoadRun with their id.
 func LoadRuns(repo string, limit int) ([]*RunSummary, error) {
-	dirs, err := filepath.Glob(filepath.Join(repo, ".review", "local-*"))
+	dirs, err := filepath.Glob(filepath.Join(repo, ".review", runDirPrefix+"*"))
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +128,11 @@ func LoadRuns(repo string, limit int) ([]*RunSummary, error) {
 	var runs []*RunSummary
 	for _, d := range dirs {
 		r, err := loadRunDir(d)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
 		if err != nil {
-			return nil, err
+			if !errors.Is(err, os.ErrNotExist) {
+				fmt.Fprintf(os.Stderr, "aspect review: skipping %s: %v\n", filepath.Base(d), err)
+			}
+			continue
 		}
 		runs = append(runs, r)
 		if limit > 0 && len(runs) == limit {
@@ -133,6 +140,12 @@ func LoadRuns(repo string, limit int) ([]*RunSummary, error) {
 		}
 	}
 	return runs, nil
+}
+
+// ValidSeverity reports whether s is a severity a findings filter may name
+// ("" is no filter).
+func ValidSeverity(s string) bool {
+	return s == "" || slices.Contains(gate.Severities, strings.ToLower(s))
 }
 
 // agentNames is the run's agents in a stable order: gates first, then by
@@ -232,10 +245,26 @@ func PrintCompare(w io.Writer, a, b *RunSummary) {
 			names = append(names, n)
 		}
 	}
+	// An agent a run did not plan shows "-", one that did not complete its
+	// state: neither is a clean result, and neither has a difference.
+	reported := func(x AgentSummary) bool { return x.State == "" || x.State == "completed" }
+	cell := func(x AgentSummary, ok bool) string {
+		switch {
+		case !ok:
+			return "-"
+		case !reported(x):
+			return x.State
+		}
+		return fmt.Sprintf("%d (%d blk)", x.FindingsCount, x.BlockersCount)
+	}
 	for _, n := range names {
-		x, y := a.Agents[n], b.Agents[n]
-		fmt.Fprintf(tw, "%s\t%d (%d blk)\t%d (%d blk)\t%+d\n", n, x.FindingsCount, x.BlockersCount,
-			y.FindingsCount, y.BlockersCount, y.FindingsCount-x.FindingsCount)
+		x, okA := a.Agents[n]
+		y, okB := b.Agents[n]
+		diff := ""
+		if okA && okB && reported(x) && reported(y) {
+			diff = fmt.Sprintf("%+d", y.FindingsCount-x.FindingsCount)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", n, cell(x, okA), cell(y, okB), diff)
 	}
 	tw.Flush()
 }
