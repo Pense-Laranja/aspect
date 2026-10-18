@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -39,6 +40,8 @@ Usage:
   aspect gate check <run-dir> [flags]  validate the agents' reports; exit 1 when the gates block
   aspect gate render <run-dir> [flags] the review result as a Markdown PR comment
   aspect gate extract -o FILE [input]  save the report an agent printed (claude -p output)
+  aspect review [flags]                run the review agents on Gemini and gate the change;
+                                       exit 1 when the gates block, 2 when there is no verdict
 
 Split flags:
   -n                list the files split would write, and their sizes, without writing
@@ -92,10 +95,25 @@ Gate flags:
   check:  -json (print the result as JSON)
   A run directory holds plan.json and one <agent>.json report per planned agent.
 
+Review flags:
+  -repo DIR         repository to review (default $CODE_REVIEWER_DEFAULT_REPO or .)
+  -base REF, -head REF as for gate plan
+  -pr N             pull request number (default: the branch's open pull request)
+  -publish          publish the result with the repository's .claude/review/publish.sh
+  -force            review again even if a run of the same diff exists
+  -o FILE           also write the Markdown result to FILE
+  The run is .review/<run-id>/: plan.json, the reports, status.json. Gemini credentials
+  come from GEMINI_API_KEY or GOOGLE_API_KEY; GEMINI_MODEL and the CODE_REVIEWER_*
+  variables tune it (see internal/review/config.go). ASPECT_HOME supplies the agents
+  and gates.yaml a repository lacks.
+
 Credentials come from ANTHROPIC_API_KEY or an "ant auth login" profile.
 `
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "review" {
+		exit(runReview(os.Args[2:]))
+	}
 	if len(os.Args) < 3 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -131,10 +149,21 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "aspect:", err)
-		os.Exit(1)
+	exit(err)
+}
+
+// exit ends the command: status 0 on success, the status an exitCode
+// carries, else 1.
+func exit(err error) {
+	if err == nil {
+		os.Exit(0)
 	}
+	fmt.Fprintln(os.Stderr, "aspect:", err)
+	var ec exitCode
+	if errors.As(err, &ec) {
+		os.Exit(ec.code)
+	}
+	os.Exit(1)
 }
 
 func loadValidated(path string) (*spec.Spec, spec.Issues, error) {

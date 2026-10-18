@@ -225,11 +225,12 @@ aspect gate extract -o .review/run/<agent>.json <transcript>  # extracts verbati
 
 Aspect review gates can be executed via three environments:
 
-1. **Gemini Review Engine (`aspect-code-reviewer` / `aspect-review`):**
-   Runs via Google Gemini (`gemini-flash-latest` or configured model) with high throughput:
-   - As an MCP server in **Claude Desktop** (exposing `review_with_aspect_gates` and `run_single_aspect_agent`).
-   - Via CLI: `aspect-review gates --repo . --base origin/main [--publish]`.
-   - As automated merge guards: `pre-merge-commit` git hook or `tools/gate-pr.sh`.
+1. **Gemini review engine (`aspect review`):**
+   Runs every applicable agent on Google Gemini (`gemini-flash-latest`, or `GEMINI_MODEL`) and gates the change in one command:
+   - `aspect review -repo . -base origin/main [-publish]` exits 0 on pass or warn, 1 when the gates block, 2 when there is no verdict.
+   - The run is `.review/<run-id>/` (plan, reports, `status.json`), and an unchanged diff reuses its finished run instead of paying for the review again.
+   - Credentials come from `GEMINI_API_KEY` or `GOOGLE_API_KEY`; the `CODE_REVIEWER_*` variables tune timeouts, retries, concurrency and the prompt budget (`internal/review/config.go`).
+   - It replaces CodeReviewer (the Python `aspect-review gates` CLI and MCP server), with the same run files, variables and exit codes.
 2. **Claude Code (Interactive CLI):**
    Runs interactively inside Claude Code via the `/review` command or `.claude/review/run.sh`.
 3. **Gemini CLI / Headless CI:**
@@ -264,7 +265,7 @@ Active development. What exists today:
 - `aspect inventory` and `aspect import`: recover a spec from a Go codebase,
   optionally split into tiers and re-expressed for Swift/iOS.
 - Multi-agent review gate engine with 15+ specialized gate and advisory personas.
-- Gemini review engine integration via Model Context Protocol (MCP) and CLI.
+- Gemini review engine: `aspect review` runs the agents on Gemini and gates the change.
 - Expanded review categories: readability, consistency, observability, contract, i18n.
 - Tests run offline against fake clients, including end-to-end pipeline
   tests that exercise a real repair round through the Go toolchain and a

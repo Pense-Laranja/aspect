@@ -1,18 +1,16 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 
 	"github.com/eideroliveira/aspect/internal/gate"
+	"github.com/eideroliveira/aspect/internal/gitx"
 )
 
 // runGate dispatches `aspect gate plan|check|render`.
@@ -79,23 +77,11 @@ func runGatePlan(args []string) error {
 	if err != nil {
 		return err
 	}
-	headSHA, err := git("rev-parse", "--verify", *head+"^{commit}")
+	p, err := gitx.Plan(context.Background(), "", c, *base, *head)
 	if err != nil {
 		return err
 	}
-	baseSHA, err := git("merge-base", *base, headSHA)
-	if err != nil {
-		return err
-	}
-	changes, err := diffChanges(baseSHA, headSHA)
-	if err != nil {
-		return err
-	}
-	spec := c.ResolveSpec(func(path string) bool {
-		_, err := git("cat-file", "-e", headSHA+":"+path)
-		return err == nil
-	})
-	b, err := json.MarshalIndent(gate.BuildPlan(c, baseSHA, headSHA, changes, spec), "", "  ")
+	b, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -195,39 +181,4 @@ func parseWithPositional(fs *flag.FlagSet, args []string) (string, error) {
 		return "", fmt.Errorf("%s: unexpected arguments %v", fs.Name(), fs.Args())
 	}
 	return pos, nil
-}
-
-// diffChanges lists the files changed between base and head with their
-// line counts. Renames are reported as a delete and an add so both paths
-// are matched against the gates.
-func diffChanges(base, head string) ([]gate.Change, error) {
-	out, err := git("diff", "--numstat", "--no-renames", "-z", base, head)
-	if err != nil {
-		return nil, err
-	}
-	var changes []gate.Change
-	for _, rec := range strings.Split(out, "\x00") {
-		if rec == "" {
-			continue
-		}
-		parts := strings.SplitN(rec, "\t", 3)
-		if len(parts) != 3 {
-			return nil, fmt.Errorf("unexpected git diff --numstat record %q", rec)
-		}
-		added, _ := strconv.Atoi(parts[0]) // "-" for binary files counts as 0
-		deleted, _ := strconv.Atoi(parts[1])
-		changes = append(changes, gate.Change{Path: parts[2], Added: added, Deleted: deleted})
-	}
-	return changes, nil
-}
-
-func git(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return strings.TrimRight(string(out), "\n"), nil
 }

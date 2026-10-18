@@ -38,6 +38,9 @@ type Request struct {
 	Schema map[string]any
 	// MaxTokens caps the response. Zero uses the client default.
 	MaxTokens int64
+	// JSON asks for an answer that is one JSON object, without a schema.
+	// Clients that cannot enforce it leave it to the prompt.
+	JSON bool
 }
 
 // Response is the model's answer plus accounting.
@@ -48,6 +51,9 @@ type Response struct {
 	InputTokens     int64
 	OutputTokens    int64
 	CacheReadTokens int64
+	// ThoughtTokens are the model's thinking tokens, billed as output but not
+	// part of Text (Gemini reports them apart from OutputTokens).
+	ThoughtTokens int64
 	// Calls is how many API calls this response aggregates; zero means one.
 	Calls int
 }
@@ -89,6 +95,7 @@ func (r Response) Merge(next Response) Response {
 	next.InputTokens += r.InputTokens
 	next.OutputTokens += r.OutputTokens
 	next.CacheReadTokens += r.CacheReadTokens
+	next.ThoughtTokens += r.ThoughtTokens
 	return next
 }
 
