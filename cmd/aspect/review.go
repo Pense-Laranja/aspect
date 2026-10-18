@@ -23,6 +23,12 @@ func (e exitCode) Error() string { return e.msg }
 // exits 0 on pass or warn, 1 when the gates block, and 2 when there is no
 // verdict (a gate agent has no report), which must not read as a pass.
 func runReview(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "status", "findings", "compare", "runs":
+			return runReviewRead(args[0], args[1:])
+		}
+	}
 	cfg := review.ConfigFromEnv()
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	repo := fs.String("repo", cfg.DefaultRepo, "repository to review")
@@ -69,4 +75,68 @@ func runReview(args []string) error {
 		return exitCode{1, "review gates blocked"}
 	}
 	return exitCode{2, fmt.Sprintf("review gates gave no verdict (%s): a gate agent has no report", res.Outcome)}
+}
+
+// runReviewRead reads earlier runs: status (a run's agents, live while it
+// runs), findings, compare (two runs side by side) and runs (the list).
+func runReviewRead(sub string, args []string) error {
+	cfg := review.ConfigFromEnv()
+	fs := flag.NewFlagSet("review "+sub, flag.ContinueOnError)
+	repo := fs.String("repo", cfg.DefaultRepo, "repository whose .review/ runs to read")
+	severity := fs.String("severity", "", "findings: only this severity")
+	agent := fs.String("agent", "", "findings: only this agent's")
+	limit := fs.Int("limit", 20, "runs: how many, newest first")
+	var pos []string
+	for len(args) > 0 {
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		pos = append(pos, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+	switch sub {
+	case "status", "findings":
+		if len(pos) > 1 {
+			return fmt.Errorf("review %s: one run id at most, got %v", sub, pos)
+		}
+		run := ""
+		if len(pos) == 1 {
+			run = pos[0]
+		}
+		r, err := review.LoadRun(*repo, run)
+		if err != nil {
+			return err
+		}
+		if sub == "status" {
+			review.PrintStatus(os.Stdout, r)
+			return nil
+		}
+		if review.PrintFindings(os.Stdout, r, *severity, *agent) == 0 {
+			fmt.Printf("No findings in run %s match.\n", r.RunID)
+		}
+		return nil
+	case "compare":
+		if len(pos) != 2 {
+			return fmt.Errorf("review compare: want two run ids, got %v", pos)
+		}
+		a, err := review.LoadRun(*repo, pos[0])
+		if err != nil {
+			return err
+		}
+		b, err := review.LoadRun(*repo, pos[1])
+		if err != nil {
+			return err
+		}
+		review.PrintCompare(os.Stdout, a, b)
+		return nil
+	}
+	runs, err := review.LoadRuns(*repo, *limit)
+	if err != nil {
+		return err
+	}
+	review.PrintRuns(os.Stdout, runs)
+	return nil
 }

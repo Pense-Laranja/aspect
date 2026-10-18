@@ -480,3 +480,43 @@ func TestGeminiAPIKeyDiscovery(t *testing.T) {
 		t.Errorf("the environment wins: %q", got)
 	}
 }
+
+func TestRunReadersShowAFinishedRun(t *testing.T) {
+	te := newTestEngine(t, testRepo(t), map[string]any{
+		"security-reviewer": `{"summary": "one", "findings": [{"severity": "high", "category": "security", "title": "Token in a log line", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "Drop it", "confidence": 0.9}]}`,
+		"red-team":          clean,
+	})
+	first := te.run(t, Options{})
+	second := te.run(t, Options{Force: true})
+
+	r, err := LoadRun(te.repo, "")
+	if err != nil || r.RunID != second.RunID {
+		t.Fatalf("current run = %v, %v", r, err)
+	}
+	var b strings.Builder
+	PrintStatus(&b, r)
+	for _, want := range []string{second.RunID, "BLOCK", "security-reviewer", "red-team"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("status lacks %q:\n%s", want, b.String())
+		}
+	}
+	b.Reset()
+	if n := PrintFindings(&b, r, "high", ""); n != 1 || !strings.Contains(b.String(), "a.go:3") || !strings.Contains(b.String(), "Drop it") {
+		t.Errorf("findings (%d):\n%s", n, b.String())
+	}
+	if n := PrintFindings(&b, r, "", "red-team"); n != 0 {
+		t.Errorf("red-team has %d findings", n)
+	}
+	runs, err := LoadRuns(te.repo, 0)
+	if err != nil || len(runs) != 2 || runs[0].RunID != second.RunID || runs[1].RunID != first.RunID {
+		t.Fatalf("runs = %v, %v", runs, err)
+	}
+	b.Reset()
+	PrintCompare(&b, runs[1], runs[0])
+	if !strings.Contains(b.String(), "security-reviewer") {
+		t.Errorf("compare:\n%s", b.String())
+	}
+	if _, err := LoadRun(te.repo, "../x"); err == nil {
+		t.Error("a path is not a run id")
+	}
+}

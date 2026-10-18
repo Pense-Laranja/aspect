@@ -1,33 +1,13 @@
 ---
-description: Check the live status of code reviews, see active reviewers, and open an auto-refreshing dashboard panel.
-argument-hint: "[panel | --web | --port 9922]"
+description: Check the status of code reviews and their reviewers, live while a review runs.
+argument-hint: "[run-id, default the current run]"
 ---
 
-Check the real-time status of Aspect code reviews and inspect active reviewer personas.
+Check the status of an Aspect review run and its reviewer agents.
 
-Follow these steps based on arguments and environment:
+Run via Bash:
+`aspect review status $ARGUMENTS`
 
-1. **Check Arguments:**
-   - If `$ARGUMENTS` contains `panel`, `web`, or `--web`: open the live auto-refreshing web panel in the user's browser.
-   - Otherwise, display the current review status and active reviewer breakdown in chat.
+It shows the run (the current one, `.review/current_run.json`, unless a run id is given): its state, outcome, cost, and each agent's mode, state (pending, queued for a model slot, running, completed, failed), verdict, blocking and warning counts, diff parts done and any error. A running review rewrites its `status.json` at every change, so running the command again shows its progress.
 
-2. **In Claude Desktop (MCP):**
-   - **Status Check:** Call the MCP tool:
-     `get_review_status()`
-     This displays in-progress review runs, which reviewer agents are running on Gemini (`gemini-flash-latest`), elapsed duration, completed reviewers, and blocker tallies.
-   - **Open Live Panel:** If the user requested the panel (`/review-status panel`) or wants continuous auto-refresh:
-     Call the MCP tool:
-     `open_review_panel()`
-     This launches the local review dashboard server and opens `http://localhost:9922` in their browser with auto-refresh every 2 seconds.
-
-3. **In Claude Code / Terminal:**
-   - **Terminal Live Dashboard (auto-refreshes every 1s):**
-     Run:
-     `aspect-review dashboard`
-   - **Web Panel in Browser (auto-refreshes every 2s):**
-     Run:
-     `aspect-review panel`
-     (or `aspect-review dashboard --web`)
-   - **Quick One-Shot Status:**
-     Run:
-     `aspect-review status`
+`aspect review runs` lists the repository's runs, newest first.
