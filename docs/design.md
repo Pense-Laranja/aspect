@@ -415,6 +415,13 @@ runs any handoffs once, then runs `aspect gate check` and shows the rendered
 result. It is the same sequence CI runs, so a branch that passes locally
 passes in CI unless the model's judgement differs.
 
+The same sequence runs without Claude Code: `aspect review` (`internal/review`)
+plans the change, sends each applicable agent its role prompt with the diff
+(scoped to the agent's files, in parts when it exceeds the prompt budget) on
+Gemini, normalizes the reports the model answers with into `aspect-review/v1`,
+and decides with `gate.Check`. An agent that fails leaves no report, so a gate
+that did not run blocks rather than passes.
+
 ### 3.3 On pull requests
 
 `.github/workflows/review-gates.yml` runs on `pull_request` (opened,
