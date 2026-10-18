@@ -433,28 +433,78 @@ func (e *Engine) detectPR(ctx context.Context, repo, branch, pr string) PullRequ
 	return found
 }
 
-// ghFindPR asks the GitHub CLI.
+// ghPR is a pull request as `gh pr view --json` (url) or the REST API
+// (html_url) gives it.
+type ghPR struct {
+	Number  json.Number `json:"number"`
+	URL     string      `json:"url"`
+	HTMLURL string      `json:"html_url"`
+	Title   string      `json:"title"`
+	Body    string      `json:"body"`
+}
+
+// ghFindPR asks the GitHub CLI: `gh pr view`, else the REST API, which a
+// proxy that refuses GraphQL (a cloud session's) still answers.
 func ghFindPR(ctx context.Context, repo, pr string) (PullRequest, bool) {
 	args := []string{"pr", "view"}
 	if pr != "" {
 		args = append(args, pr)
 	}
-	cmd := exec.CommandContext(ctx, "gh", append(args, "--json", "number,url,title,body")...)
-	cmd.Dir = repo
-	out, err := cmd.Output()
+	var v ghPR
+	if out, err := ghOutput(ctx, repo, append(args, "--json", "number,url,title,body")...); err == nil && json.Unmarshal(out, &v) == nil && v.Number != "" {
+		return PullRequest{Number: v.Number.String(), URL: v.URL, Title: strings.TrimSpace(v.Title), Body: strings.TrimSpace(v.Body)}, true
+	}
+	slug := remoteSlug(ctx, repo)
+	if slug == "" {
+		return PullRequest{}, false
+	}
+	path := "repos/" + slug + "/pulls/" + pr
+	if pr == "" {
+		branch, err := gitx.Run(ctx, repo, "branch", "--show-current")
+		if err != nil || branch == "" {
+			return PullRequest{}, false
+		}
+		owner, _, _ := strings.Cut(slug, "/")
+		path = "repos/" + slug + "/pulls?state=open&head=" + owner + ":" + branch
+	}
+	out, err := ghOutput(ctx, repo, "api", path)
 	if err != nil {
 		return PullRequest{}, false
 	}
-	var v struct {
-		Number      json.Number `json:"number"`
-		URL         string      `json:"url"`
-		Title, Body string
+	if pr == "" {
+		var list []json.RawMessage
+		if json.Unmarshal(out, &list) != nil || len(list) == 0 {
+			return PullRequest{}, false
+		}
+		out = list[0]
 	}
+	v = ghPR{}
 	if json.Unmarshal(out, &v) != nil || v.Number == "" {
 		return PullRequest{}, false
 	}
-	return PullRequest{Number: v.Number.String(), URL: v.URL, Title: strings.TrimSpace(v.Title), Body: strings.TrimSpace(v.Body)}, true
+	return PullRequest{Number: v.Number.String(), URL: v.HTMLURL, Title: strings.TrimSpace(v.Title), Body: strings.TrimSpace(v.Body)}, true
 }
+
+func ghOutput(ctx context.Context, repo string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Dir = repo
+	return cmd.Output()
+}
+
+// remoteSlug is owner/name of the origin remote, read off its URL's last two
+// path segments: a GitHub URL, or a proxy's URL that ends the same way.
+func remoteSlug(ctx context.Context, repo string) string {
+	url, err := gitx.Run(ctx, repo, "remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
+	if m := remoteTail.FindStringSubmatch(strings.TrimSpace(url)); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+var remoteTail = regexp.MustCompile(`[/:]([^/:\s]+/[^/:\s]+?)(?:\.git)?/?$`)
 
 var githubRemote = regexp.MustCompile(`github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$`)
 

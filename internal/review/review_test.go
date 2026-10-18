@@ -112,6 +112,7 @@ func testRepo(t *testing.T) string {
 	}
 	repo := t.TempDir()
 	gitIn(t, repo, "init", "-q", "-b", "main")
+	gitIn(t, repo, "remote", "add", "origin", "https://github.com/example/repo.git")
 	writeFile(t, filepath.Join(repo, ".claude/review/gates.yaml"), testGates)
 	for _, a := range []string{"security-reviewer", "red-team"} {
 		// The prompt body is the agent's name, so fakeModel tells them apart.
@@ -518,5 +519,40 @@ func TestRunReadersShowAFinishedRun(t *testing.T) {
 	}
 	if _, err := LoadRun(te.repo, "../x"); err == nil {
 		t.Error("a path is not a run id")
+	}
+}
+
+func TestAReusedRunIsPublishedWhenNoPRIsFound(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, ".claude/review/publish.sh"), "#!/bin/sh\necho \"published $*\"\n")
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	if first.Published != "" {
+		t.Fatalf("published without -publish: %q", first.Published)
+	}
+	// No pull request is found (a cloud proxy refuses gh pr view): publish.sh
+	// still runs, and finds the branch's pull request itself.
+	second := te.run(t, Options{Publish: true})
+	if !second.Cached || !strings.HasPrefix(second.Published, "published") || strings.Contains(second.Published, "--pr") {
+		t.Fatalf("second = %+v", second)
+	}
+	if st := readStatus(t, second.RunDir); st["published_status"] != nil {
+		t.Errorf("a publish to no known pull request is not recorded: %v", st["published_status"])
+	}
+}
+
+func TestRemoteSlug(t *testing.T) {
+	repo := testRepo(t)
+	for url, want := range map[string]string{
+		"https://github.com/Pense-Laranja/gordpress.git":                 "Pense-Laranja/gordpress",
+		"git@github.com:eideroliveira/aspect.git":                        "eideroliveira/aspect",
+		"http://local_proxy@127.0.0.1:41231/git/Pense-Laranja/gordpress": "Pense-Laranja/gordpress",
+		"https://github.com/eideroliveira/aspect/":                       "eideroliveira/aspect",
+	} {
+		gitIn(t, repo, "remote", "remove", "origin")
+		gitIn(t, repo, "remote", "add", "origin", url)
+		if got := remoteSlug(context.Background(), repo); got != want {
+			t.Errorf("remoteSlug(%s) = %q, want %q", url, got, want)
+		}
 	}
 }
