@@ -500,7 +500,8 @@ modules:
 
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `name` | identifier | yes | Unique across the spec; also the code directory |
+| `name` | identifier | yes | Unique across the spec; also the code directory unless `path` is set |
+| `path` | slash path | no | Go only: the module's package directory relative to the tier's code root (`.` for the root). Written by `aspect import`; see [Module paths](#module-paths) |
 | `intent` | text | yes | What the module is for, not how it works |
 | `goals` | goal ids | no | Goals this module is accountable for |
 | `depends_on` | module names | no | Same-tier modules whose code this one imports; acyclic |
@@ -525,6 +526,39 @@ can be owned by a scenario rather than a whole module.
 
 A module with neither scenarios nor invariants is accepted with a warning:
 its tests are inferred from the interface alone, which is weak evidence.
+
+### Module paths
+
+A module's code lives where the language profile says: `<name>/` in Go.
+An imported module cannot always be found that way, because a package
+directory does not survive its turn into an identifier: `modules/api`,
+`modules_api` and `modules/api_` all become the module `modules_api`, and the
+root package becomes `root`. So `aspect import` records each package's
+directory as the module's `path`:
+
+```yaml
+modules:
+  - name: modules_api
+    path: modules/api
+  - name: root
+    path: .
+```
+
+A module with a `path` is exactly one package. It owns the Go files in that
+directory and nothing below it (subpackages are other modules, or code no
+module claims), and its build and test steps run on that package only
+(`go test ./modules/api`, `go test .` for the root). A module without a
+`path` owns its directory and everything beneath it, as before, so a
+module with a `path` may not sit inside such a directory. Paths are clean
+relative slash paths, unique within a tier; they are valid only in Go
+tiers.
+
+A spec imported before `path` existed can get the field back from the
+repository with `aspect paths <spec> -repo <dir> -w`, which matches each
+module name against the packages on disk and writes `path:` under the
+module's `name:` in whichever file defines it. A module that no package
+maps to, that several do, or whose package another module already holds,
+is reported and nothing is written. Tiers in other languages are skipped.
 
 ### Briefs
 
@@ -562,11 +596,14 @@ source:
   commit: 2a630a7d
   imported_at: 2026-09-09T20:00:00Z
   frameworks: [chi, gorm, qor5]
+  exclude: [external, cmd]
 ```
 
 `frameworks` keeps what the source used even when the target language's
 stack cannot carry them, so a retargeted spec remembers where its shape
-came from.
+came from. `exclude` is the import's `-exclude` list (directory names, or
+relative paths and everything below them): `aspect drift` does not report
+code there as unclaimed, since the spec never meant to describe it.
 
 ---
 
@@ -605,6 +642,7 @@ Interfaces
 Tiers
 - Every tier has `name`, `intent`, a supported `language`, `module_path` and modules; `external` is not a tier name; tier dependencies resolve and are acyclic.
 - Module `depends_on` resolves, is not the module itself, stays inside the tier, and is acyclic.
+- Module `path` is a clean relative slash path that stays inside the code root, is used by one module of the tier only, appears only in Go tiers, and does not lie inside the directory of a module laid out by name (`<name>/` owns everything below it).
 
 Topology
 - A declared `api_backend` has at least two tiers and at least one module consuming a surface provided by another tier.
@@ -657,7 +695,7 @@ of each tier.
 
 | Language | Layout | Manifest | Build and test |
 |---|---|---|---|
-| `go` | `<module>/` as package `<module>`; tests `*_test.go` beside the code | `go.mod` written once (version from the stack) | `go mod tidy`, `go vet`, `go test -race` |
+| `go` | `<module>/` as package `<module>`, or the module's `path`; tests `*_test.go` beside the code | `go.mod` written once (version from the stack) | `go mod tidy`, `go vet`, `go test -race` (on `./<module>/...`, or on the one package at `path`) |
 | `swift` | `Sources/<Module>/` and `Tests/<Module>Tests/` (PascalCase of the module name) | `Package.swift` regenerated after every module; platforms iOS 17 and macOS 14 so tests run on the host; stack frameworks become package dependencies | `swift build`, `swift test --filter <Module>Tests` |
 
 ---
@@ -844,7 +882,7 @@ system:
           errors: [text]                                #opt
           auth: text                                    #opt
   source:                                               #opt, written by import
-    {language: string, repository: string, commit: string, imported_at: string, frameworks: [string]}
+    {language: string, repository: string, commit: string, imported_at: string, frameworks: [string], exclude: [string]}
   brief: relative/path.md                               #opt
   dependencies:                                         #opt, other Aspect systems
     - {name: identifier, spec: relative/aspect.yaml, intent: text}
@@ -852,6 +890,7 @@ system:
 modules:                                                # single-tier
   - &module
     name: identifier
+    path: relative/dir                                  #opt, Go only; written by import
     intent: text
     goals: [goal-id]                                    #opt
     depends_on: [module-name]                           #opt, same tier

@@ -19,6 +19,8 @@ func TestNames(t *testing.T) {
 	}
 }
 
+var stock = &spec.Module{Name: "stock"}
+
 func TestKeepModuleFilesSwift(t *testing.T) {
 	p, _ := For("swift")
 	files := []workspace.File{
@@ -28,8 +30,8 @@ func TestKeepModuleFilesSwift(t *testing.T) {
 		{Path: "Tests/StockTests/T.swift", Content: "t"},
 		{Path: "Sources/Stock/README.md", Content: "r"},
 	}
-	code := p.KeepModuleFiles("stock", files, false)
-	tests := p.KeepModuleFiles("stock", files, true)
+	code := p.KeepModuleFiles(stock, files, false)
+	tests := p.KeepModuleFiles(stock, files, true)
 	if len(code) != 2 || code[1].Path != "Sources/Stock/B.swift" || len(tests) != 1 {
 		t.Fatalf("code=%v tests=%v", code, tests)
 	}
@@ -48,7 +50,7 @@ func TestSplitModuleFilesRefusesEscapesDuplicatesAndEmptyFiles(t *testing.T) {
 		{Path: "", Content: "x"},
 		{Path: "../outside/stock/x.go", Content: "package stock"},
 	}
-	kept, dropped := p.SplitModuleFiles("stock", files, false)
+	kept, dropped := p.SplitModuleFiles(stock, files, false)
 	if len(kept) != 2 || kept[0].Path != "stock/stock.go" || kept[1].Path != "stock/model.go" {
 		t.Fatalf("kept = %+v", kept)
 	}
@@ -127,6 +129,102 @@ func TestPascalCase(t *testing.T) {
 	for in, want := range map[string]string{"stock": "Stock", "stock_ledger": "StockLedger", "a__b": "AB"} {
 		if got := PascalCase(in); got != want {
 			t.Errorf("PascalCase(%q) = %q", in, got)
+		}
+	}
+}
+
+// An imported spec places modules by package directory. A module so placed
+// owns that one directory: not a sibling sharing its prefix, not the
+// packages below it, and the root module owns only the root's files.
+func TestOwnerByPath(t *testing.T) {
+	p, _ := For("go")
+	root := &spec.Module{Name: "root", Path: "."}
+	modules := &spec.Module{Name: "modules", Path: "modules"}
+	api := &spec.Module{Name: "modules_api", Path: "modules/api"}
+	apikeys := &spec.Module{Name: "modules_apikeys", Path: "modules/apikeys"}
+	underscore := &spec.Module{Name: "store_product_render", Path: "store/product_render"}
+	legacy := &spec.Module{Name: "stock"} // laid out by name: owns stock/ and below
+	mods := []*spec.Module{root, modules, api, apikeys, underscore, legacy}
+	for file, want := range map[string]*spec.Module{
+		"main.go":                        root,
+		"main_test.go":                   root,
+		"modules/modules.go":             modules,
+		"modules/api/api.go":             api,
+		"modules/api/api_test.go":        api,
+		"modules/apikeys/keys.go":        apikeys,
+		"modules/api/v2/v2.go":           nil, // a package no module claims
+		"store/product_render/render.go": underscore,
+		"store/store.go":                 nil,
+		"stock/stock.go":                 legacy,
+		"stock/sub/sub.go":               legacy,
+		"stockpile/x.go":                 nil,
+	} {
+		if got := p.Owner(mods, file); got != want {
+			t.Errorf("Owner(%s) = %v, want %v", file, name(got), name(want))
+		}
+	}
+	if got := goPattern(root); got != "." {
+		t.Errorf("root pattern = %q", got)
+	}
+	if got := goPattern(api); got != "./modules/api" {
+		t.Errorf("path pattern = %q, want one package", got)
+	}
+	if got := goPattern(legacy); got != "./stock/..." {
+		t.Errorf("legacy pattern = %q", got)
+	}
+}
+
+// A coder writing a path-placed module may write only into its directory.
+func TestSplitModuleFilesByPath(t *testing.T) {
+	p, _ := For("go")
+	api := &spec.Module{Name: "modules_api", Path: "modules/api"}
+	files := []workspace.File{
+		{Path: "modules/api/api.go", Content: "package api"},
+		{Path: "modules/api/v2/v2.go", Content: "package v2"},
+		{Path: "modules_api/api.go", Content: "package modules_api"},
+	}
+	kept, dropped := p.SplitModuleFiles(api, files, false)
+	if len(kept) != 1 || kept[0].Path != "modules/api/api.go" || len(dropped) != 2 {
+		t.Fatalf("kept=%+v dropped=%+v", kept, dropped)
+	}
+	root := &spec.Module{Name: "root", Path: "."}
+	kept, _ = p.SplitModuleFiles(root, []workspace.File{{Path: "main.go", Content: "package main"}, {Path: "cmd/x.go", Content: "package main"}}, false)
+	if len(kept) != 1 || kept[0].Path != "main.go" {
+		t.Fatalf("root kept=%+v", kept)
+	}
+}
+
+func name(m *spec.Module) string {
+	if m == nil {
+		return "<none>"
+	}
+	return m.Name
+}
+
+// When directories overlap (the validator refuses this, Owner must not rely
+// on it) the deepest directory wins and a placed module wins a tie, whatever
+// order the modules come in.
+func TestOwnerArbitratesOverlaps(t *testing.T) {
+	p, _ := For("go")
+	byName := &spec.Module{Name: "modules"}                       // modules/ and everything below
+	api := &spec.Module{Name: "modules_api", Path: "modules/api"} // deeper than modules/
+	pkgByName := &spec.Module{Name: "pkg"}                        // pkg/ and below
+	pkgPlaced := &spec.Module{Name: "pkg_placed", Path: "pkg"}    // the same directory: a tie
+	want := map[string]*spec.Module{
+		"modules/api/api.go":   api,       // deeper wins over the recursive parent
+		"modules/x/x.go":       byName,    // only the recursive parent holds it
+		"modules/api/v2/v2.go": byName,    // a placed module never holds a subpackage
+		"pkg/a.go":             pkgPlaced, // tie on pkg/: the placed module
+		"pkg/sub/b.go":         pkgByName, // below pkg/: only the module by name
+	}
+	for _, mods := range [][]*spec.Module{
+		{byName, api, pkgByName, pkgPlaced},
+		{pkgPlaced, pkgByName, api, byName},
+	} {
+		for file, w := range want {
+			if got := p.Owner(mods, file); got != w {
+				t.Errorf("order %s...: Owner(%s) = %s, want %s", mods[0].Name, file, name(got), name(w))
+			}
 		}
 	}
 }

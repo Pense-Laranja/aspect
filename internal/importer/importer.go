@@ -283,12 +283,24 @@ func Ident(s string) string {
 	return s
 }
 
-// ModuleName maps a package directory to a module name.
+// ModuleName maps a package directory to a module name. The mapping loses
+// information (modules/api and modules_api both become modules_api), so
+// the assembler also records the directory itself as the module's path;
+// see ModuleDir.
 func ModuleName(dir string) string {
 	if dir == "." || dir == "" {
 		return "root"
 	}
 	return Ident(dir)
+}
+
+// ModuleDir is the spec path of the module mirrored from a package
+// directory: the directory as a slash path, "." for the root.
+func ModuleDir(dir string) string {
+	if dir == "" {
+		return "."
+	}
+	return filepath.ToSlash(dir)
 }
 
 // Assemble builds the spec from the inventory, the fragments and the
@@ -313,6 +325,7 @@ func Assemble(inv *analyze.Inventory, frags []agents.Fragment, synth agents.Synt
 	s.System.Source = &spec.Source{
 		Language: inv.Language, Repository: opts.Repository, Commit: opts.Commit,
 		ImportedAt: time.Now().UTC().Format(time.RFC3339), Frameworks: inv.Frameworks,
+		Exclude: opts.Exclude,
 	}
 
 	switch modeOf(inv, opts) {
@@ -443,6 +456,7 @@ func (a *assembler) mirror(frags []agents.Fragment, synthIfaces []spec.Interface
 		}
 		m := spec.Module{
 			Name:        ModuleName(p.Dir),
+			Path:        ModuleDir(p.Dir),
 			Intent:      strings.TrimSpace(f.Intent),
 			Interface:   f.Operations,
 			Invariants:  invs,

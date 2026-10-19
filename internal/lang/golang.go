@@ -16,17 +16,18 @@ func init() {
 		Name:        "go",
 		DisplayName: "Go",
 		SourceExt:   ".go",
-		CodeDir:     func(m string) string { return m + "/" },
-		TestDir:     func(m string) string { return m + "/" },
+		CodeDir:     goDir,
+		TestDir:     goDir,
 		IsTestFile:  func(p string) bool { return strings.HasSuffix(p, "_test.go") },
+		SkipDir:     goSkipDir,
 		Init:        goInit,
 		Sync:        func(string, *spec.Spec, *spec.Tier, []string) error { return nil },
-		Steps: func(module string) [][]string {
-			pattern := "./" + module + "/..."
+		Prepare:     [][]string{{"go", "mod", "tidy"}},
+		Env:         []string{"GOFLAGS=-mod=mod", "GOWORK=off"},
+		Steps: func(m *spec.Module) [][]string {
 			return [][]string{
-				{"go", "mod", "tidy"},
-				{"go", "vet", pattern},
-				{"go", "test", "-count=1", "-race", pattern},
+				{"go", "vet", goPattern(m)},
+				{"go", "test", "-count=1", "-race", goPattern(m)},
 			}
 		},
 		CheckImports: workspace.CheckGoImports,
@@ -41,6 +42,42 @@ func init() {
 - Concurrency constraints get a test that runs operations from many goroutines; the pipeline runs go test -race.
 - Property-style tests use math/rand with a fixed seed so failures reproduce.`,
 	})
+}
+
+// goDir is a Go module's directory: its spec path when it has one (one
+// package, possibly the root), else <name>/.
+func goDir(m *spec.Module) string {
+	switch m.Path {
+	case "":
+		return m.Name + "/"
+	case ".":
+		return ""
+	}
+	return m.Path + "/"
+}
+
+// goSkipDir leaves out what ./... leaves out: testdata, vendor, directories
+// starting with an underscore, and nested modules, which are other projects.
+func goSkipDir(dir string) bool {
+	name := filepath.Base(dir)
+	if name == "testdata" || name == "vendor" || name == "node_modules" || strings.HasPrefix(name, "_") {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(dir, "go.mod"))
+	return err == nil
+}
+
+// goPattern is the package pattern go vet and go test run on. A module laid
+// out by name may hold subpackages; a module placed by path is exactly one
+// package, and the packages below it belong to other modules.
+func goPattern(m *spec.Module) string {
+	switch m.Path {
+	case "":
+		return "./" + m.Name + "/..."
+	case ".":
+		return "."
+	}
+	return "./" + m.Path
 }
 
 func goInit(root string, _ *spec.Spec, t *spec.Tier) error {

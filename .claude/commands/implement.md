@@ -45,7 +45,7 @@ table (spec element, what it requires, where the code will go):
   exercise it; a goal brings the operations and scenarios that serve it.
 - Without one, take what the spec gained on this branch
   (`git diff <base>...HEAD -- <spec files and briefs>`), plus what
-  `aspect drift <spec> -out . -no-llm` reports as missing.
+  `aspect drift <spec> -repo . -no-llm` reports as missing.
 
 If the scope is empty, say so and stop. If the user named a spec reference,
 continue without waiting: everything below happens in local commits on a
@@ -76,7 +76,7 @@ Write the code and tests for the scope yourself, following the repository's
   built, stop and ask the user. A spec change goes through `spec-keeper` in
   `author` mode, with the user's agreement.
 - Run the project's build and tests (its `CLAUDE.md` says how) until they
-  pass, then `aspect drift <spec> -out . -no-llm` and check that nothing in
+  pass, then `aspect drift <spec> -repo . -no-llm` and check that nothing in
   scope is still missing.
 - Commit with explicit paths (`git add <path>…`, never `.` or `-A`) and a
   message `implement: <scope>`. Never push.

@@ -134,10 +134,25 @@ func (r *Runner) logf(format string, args ...any) {
 func Toolchain(p *lang.Profile, s *spec.Spec, t *spec.Tier) workspace.Toolchain {
 	return workspace.Toolchain{
 		SourceExt: p.SourceExt,
+		SkipDir:   p.SkipDir,
 		Protected: []string{"go.mod", "go.sum", "Package.swift", "Package.resolved"},
 		Init:      func(root string) error { return p.Init(root, s, t) },
 		Sync:      func(root string, mods []string) error { return p.Sync(root, s, t, mods) },
-		Steps:     p.Steps,
+		Steps: func(module string) [][]string {
+			return append(append([][]string{}, p.Prepare...), p.Steps(t.Module(module))...)
+		},
+		Env: p.Env,
+	}
+}
+
+// InPlaceToolchain is Toolchain for a repository Aspect did not generate and
+// must not change: no manifest is written or synced, no Prepare step runs,
+// and the steps see the caller's own environment (its GOFLAGS, its go.work).
+func InPlaceToolchain(p *lang.Profile, t *spec.Tier) workspace.Toolchain {
+	return workspace.Toolchain{
+		SourceExt: p.SourceExt,
+		SkipDir:   p.SkipDir,
+		Steps:     func(module string) [][]string { return p.Steps(t.Module(module)) },
 	}
 }
 
@@ -295,7 +310,7 @@ func (r *Runner) runModule(ctx context.Context, s *spec.Spec, tier *spec.Tier, p
 	}
 	task := agents.Task{Spec: s, Tier: tier, Module: tier.Module(step.Module), Lang: profile}
 	allowed := tier.AllowedImports()
-	deps, err := dependencyFiles(ws, profile, step.DependsOn)
+	deps, err := dependencyFiles(ws, profile, tier, step.DependsOn)
 	if err != nil {
 		return fail(err)
 	}
@@ -424,7 +439,7 @@ func checkImports(p *lang.Profile, files []workspace.File, allowed []string) []w
 }
 
 // dependencyFiles collects the source (not tests) of the named modules.
-func dependencyFiles(ws *workspace.Workspace, p *lang.Profile, deps []string) ([]workspace.File, error) {
+func dependencyFiles(ws *workspace.Workspace, p *lang.Profile, t *spec.Tier, deps []string) ([]workspace.File, error) {
 	if len(deps) == 0 {
 		return nil, nil
 	}
@@ -432,16 +447,18 @@ func dependencyFiles(ws *workspace.Workspace, p *lang.Profile, deps []string) ([
 	if err != nil {
 		return nil, err
 	}
+	want := map[string]bool{}
+	for _, d := range deps {
+		want[d] = true
+	}
+	mods := t.ModuleRefs()
 	var out []workspace.File
 	for _, f := range tree {
 		if p.IsTestFile(f.Path) {
 			continue
 		}
-		for _, d := range deps {
-			if strings.HasPrefix(f.Path, p.CodeDir(d)) {
-				out = append(out, f)
-				break
-			}
+		if owner := p.Owner(mods, f.Path); owner != nil && want[owner.Name] {
+			out = append(out, f)
 		}
 	}
 	return out, nil

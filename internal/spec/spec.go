@@ -145,6 +145,10 @@ type Source struct {
 	// Frameworks detected in the source, kept for reference when the target
 	// language differs and the stack section cannot carry them.
 	Frameworks []string `yaml:"frameworks,omitempty" json:"frameworks,omitempty"`
+	// Exclude are the directories the import was told to skip (names or
+	// relative paths, prefix match). Drift does not report code there as
+	// unclaimed: the spec never meant to describe it.
+	Exclude []string `yaml:"exclude,omitempty" json:"exclude,omitempty"`
 }
 
 // Goal is an outcome the finished system must achieve. Every goal is owned by at
@@ -363,7 +367,14 @@ func (inv Invariant) String() string {
 // Module is a unit of implementation with its own intent. Modules are generated
 // in dependency order, each one seeing the interfaces of its dependencies.
 type Module struct {
-	Name        string      `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Path is the directory holding the module's code, relative to the
+	// tier's code root, as a slash path ("." for the root). Empty means the
+	// language's default layout (<name>/ in Go). aspect import writes it,
+	// because a package directory cannot be recovered from a module name:
+	// modules/api and modules_api both become the module modules_api. A
+	// module with a path owns that one directory, not its subdirectories.
+	Path        string      `yaml:"path,omitempty" json:"path,omitempty"`
 	Intent      string      `yaml:"intent" json:"intent"`
 	Goals       []string    `yaml:"goals,omitempty" json:"goals,omitempty"`
 	DependsOn   []string    `yaml:"depends_on,omitempty" json:"depends_on,omitempty"`
@@ -659,6 +670,20 @@ func (t *Tier) LanguageStack() *LanguageStack {
 	}
 	return nil
 }
+
+// ModuleRefs returns pointers to the tier's modules, in order.
+func (t *Tier) ModuleRefs() []*Module {
+	out := make([]*Module, len(t.Modules))
+	for i := range t.Modules {
+		out[i] = &t.Modules[i]
+	}
+	return out
+}
+
+// Placed reports whether the module's directory is its explicit Path (one
+// package, that directory only) rather than the language's layout by name
+// (the directory and everything below it).
+func (m *Module) Placed() bool { return m.Path != "" }
 
 // Module returns the tier's module with the given name, or nil.
 func (t *Tier) Module(name string) *Module {

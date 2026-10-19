@@ -26,21 +26,34 @@ type Profile struct {
 	// SourceExt is the source file extension including the dot.
 	SourceExt string
 
-	// CodeDir is the directory (with trailing slash) holding a module's
-	// implementation files.
-	CodeDir func(module string) string
-	// TestDir is the directory (with trailing slash) holding a module's tests.
-	TestDir func(module string) string
+	// CodeDir is the directory (with trailing slash, or "" for the tier's
+	// code root) holding a module's implementation files. Match files
+	// against it with Owns or Owner, never with a bare prefix test: a
+	// module placed by spec.Module.Path owns only that directory.
+	CodeDir func(m *spec.Module) string
+	// TestDir is the directory (with trailing slash, or "" for the tier's
+	// code root) holding a module's tests.
+	TestDir func(m *spec.Module) string
 	// IsTestFile reports whether a path is a test file.
 	IsTestFile func(path string) bool
+	// SkipDir reports whether a directory below a tier's root (an OS path)
+	// holds no module code, as the toolchain sees it. May be nil.
+	SkipDir func(dir string) bool
 
 	// Init writes the tier's workspace manifest (go.mod, Package.swift) once.
 	Init func(root string, s *spec.Spec, t *spec.Tier) error
 	// Sync updates the manifest for the modules generated so far. Go needs
 	// nothing; SwiftPM must list every target it can see on disk.
 	Sync func(root string, s *spec.Spec, t *spec.Tier, modules []string) error
+	// Prepare are the commands, run in root before Steps, that bring the
+	// manifest up to date (go mod tidy). They write to the tree, so a check
+	// of a repository in place skips them.
+	Prepare [][]string
 	// Steps are the commands, run in root, that build and test one module.
-	Steps func(module string) [][]string
+	Steps func(m *spec.Module) [][]string
+	// Env is added to the environment of Prepare and Steps in a workspace
+	// Aspect generated. A repository checked in place keeps its own.
+	Env []string
 	// CheckImports enforces the spec's import allowlist. May be nil.
 	CheckImports func(files []workspace.File, allowed []string) []workspace.ImportViolation
 
@@ -83,8 +96,8 @@ type Dropped struct {
 // or test directory, and keeps only test files when wantTests is set (only
 // implementation files otherwise). Agents are trusted to write code, not to
 // reach across modules or roles. See SplitModuleFiles for the reasons.
-func (p *Profile) KeepModuleFiles(module string, files []workspace.File, wantTests bool) []workspace.File {
-	kept, _ := p.SplitModuleFiles(module, files, wantTests)
+func (p *Profile) KeepModuleFiles(m *spec.Module, files []workspace.File, wantTests bool) []workspace.File {
+	kept, _ := p.SplitModuleFiles(m, files, wantTests)
 	return kept
 }
 
@@ -93,11 +106,11 @@ func (p *Profile) KeepModuleFiles(module string, files []workspace.File, wantTes
 // is refused rather than written into another module; a path repeated in one
 // answer keeps its first occurrence; a file with no content is refused
 // because the model elided it rather than wrote it.
-func (p *Profile) SplitModuleFiles(module string, files []workspace.File, wantTests bool) ([]workspace.File, []Dropped) {
-	dir := p.CodeDir(module)
+func (p *Profile) SplitModuleFiles(m *spec.Module, files []workspace.File, wantTests bool) ([]workspace.File, []Dropped) {
+	dir := p.CodeDir(m)
 	role := "implementation"
 	if wantTests {
-		dir = p.TestDir(module)
+		dir = p.TestDir(m)
 		role = "test"
 	}
 	var kept []workspace.File
@@ -109,8 +122,8 @@ func (p *Profile) SplitModuleFiles(module string, files []workspace.File, wantTe
 		switch {
 		case raw == "" || clean == "." || path.IsAbs(clean) || hasDotDot(clean):
 			dropped = append(dropped, Dropped{raw, "path is empty, absolute, or leaves the module directory"})
-		case !strings.HasPrefix(clean, dir):
-			dropped = append(dropped, Dropped{raw, fmt.Sprintf("outside the module's %s directory %s", role, dir)})
+		case !within(clean, dir, !m.Placed()):
+			dropped = append(dropped, Dropped{raw, fmt.Sprintf("outside the module's %s directory %s", role, DirLabel(dir))})
 		case !strings.HasSuffix(clean, p.SourceExt):
 			dropped = append(dropped, Dropped{raw, "not a " + p.SourceExt + " source file"})
 		case p.IsTestFile(clean) != wantTests:
@@ -130,6 +143,47 @@ func (p *Profile) SplitModuleFiles(module string, files []workspace.File, wantTe
 		}
 	}
 	return kept, dropped
+}
+
+// Owner returns the module among mods that owns file (a slash path relative
+// to the tier's code root), or nil. A module placed by path is one package
+// and holds only the files directly in its directory; a module laid out by
+// name holds everything beneath its directory. The validator keeps those
+// from overlapping, but Owner still arbitrates for a spec it has not
+// checked: the deepest directory wins, and on a tie the placed module.
+func (p *Profile) Owner(mods []*spec.Module, file string) *spec.Module {
+	var best *spec.Module
+	bestLen := -1
+	for _, m := range mods {
+		for _, dir := range []string{p.CodeDir(m), p.TestDir(m)} {
+			if !within(file, dir, !m.Placed()) {
+				continue
+			}
+			deeper := len(dir) > bestLen
+			placedWinsTie := len(dir) == bestLen && m.Placed() && !best.Placed()
+			if deeper || placedWinsTie {
+				best, bestLen = m, len(dir)
+			}
+		}
+	}
+	return best
+}
+
+// DirLabel shows a CodeDir or TestDir to a person: the code root is "./".
+func DirLabel(dir string) string {
+	if dir == "" {
+		return "./"
+	}
+	return dir
+}
+
+// within reports whether file is in dir ("" is the root; otherwise dir ends
+// in a slash), directly or, when recursive, in any subdirectory.
+func within(file, dir string, recursive bool) bool {
+	if !strings.HasPrefix(file, dir) {
+		return false
+	}
+	return recursive || !strings.Contains(file[len(dir):], "/")
 }
 
 // hasDotDot reports whether a cleaned slash path still has a ".." segment,

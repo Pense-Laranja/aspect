@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/eideroliveira/aspect/internal/analyze"
@@ -33,6 +34,7 @@ Usage:
   aspect plan     <spec.yaml>          show the module build order and what each step needs
   aspect run      <spec.yaml> [flags]  generate code and tests, run them, validate goals
   aspect drift    <spec.yaml> [flags]  re-validate existing code against the spec without regenerating
+  aspect paths    <spec.yaml> [flags]  record each imported module's package directory (path:) in the spec
   aspect inventory <dir> [flags]       deterministic inventory of an existing Go codebase (no model calls)
   aspect import   <dir> [flags]        recover a spec from an existing Go codebase
   aspect check-invariants <dir> [flags] deterministic verification of code and architectural invariants
@@ -60,12 +62,20 @@ Run flags:
   -fallbacks=false  disable server-side refusal fallbacks
 
 Drift flags:
-  -out DIR          where the code lives, as given to run -out (default ./out)
+  -out DIR          where the code lives, as given to run -out (default ./out): out/<system>[/<tier>]
+  -repo DIR         check a repository in place instead (the code the spec describes, e.g. -repo .):
+                    a single-tier spec's code is DIR, a tier's DIR/<tier>; nothing there is written
+  -report DIR       where drift.json and DRIFT.md go (default out/<system>, or
+                    <user cache dir>/aspect/drift/<system> with -repo)
   -baseline FILE    a previous report.json or drift.json to compare goal verdicts against
                     (default out/<system>/report.json when it exists)
   -no-llm           presence, orphans and tests only; no verdicts
   -no-fail          exit 0 even when drift is found
   -model, -effort, -fallbacks as for run
+
+Paths flags (for specs imported before modules recorded their directory):
+  -repo DIR         the repository the spec was imported from (default .)
+  -w                write path: into the spec files; without it, print what would be written
 
 Inventory and import flags:
   -include a,b      only these package directories (prefix match)
@@ -141,6 +151,8 @@ func main() {
 		err = runRun(path, os.Args[3:])
 	case "drift":
 		err = runDrift(path, os.Args[3:])
+	case "paths":
+		err = runPaths(path, os.Args[3:])
 	case "inventory":
 		err = runInventory(path, os.Args[3:])
 	case "import":
@@ -335,6 +347,8 @@ func runRun(path string, args []string) error {
 func runDrift(path string, args []string) error {
 	fs := flag.NewFlagSet("drift", flag.ContinueOnError)
 	out := fs.String("out", "out", "directory holding the generated code")
+	repo := fs.String("repo", "", "check this repository in place instead of -out")
+	reportDir := fs.String("report", "", "where drift.json and DRIFT.md go")
 	baseline := fs.String("baseline", "", "previous report.json or drift.json")
 	noLLM := fs.Bool("no-llm", false, "skip verdicts")
 	noFail := fs.Bool("no-fail", false, "exit 0 even when drift is found")
@@ -344,6 +358,9 @@ func runDrift(path string, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *repo != "" && flagSet(fs, "out") {
+		return fmt.Errorf("drift: -out and -repo name two different places for the code; pass one")
+	}
 	s, _, err := loadValidated(path)
 	if err != nil {
 		return err
@@ -352,7 +369,7 @@ func runDrift(path string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if *baseline == "" {
+	if *baseline == "" && *repo == "" {
 		if candidate := filepath.Join(*out, s.System.Name, "report.json"); fileExists(candidate) {
 			*baseline = candidate
 		}
@@ -364,11 +381,23 @@ func runDrift(path string, args []string) error {
 	if !*noLLM {
 		client = llm.NewAnthropic(llm.WithModel(*model), llm.WithEffort(*effort), llm.WithFallbacks(*fallbacks))
 	}
-	rep, err := drift.Run(ctx, client, s, p, drift.Options{OutDir: *out, Baseline: *baseline, NoLLM: *noLLM, Log: os.Stderr, Model: *model})
+	rep, err := drift.Run(ctx, client, s, p, drift.Options{OutDir: *out, Repo: *repo, Baseline: *baseline, NoLLM: *noLLM, Log: os.Stderr, Model: *model})
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(*out, s.System.Name)
+	dir := *reportDir
+	switch {
+	case dir != "":
+	case *repo != "":
+		// Never leave files in the repository being checked. The user's
+		// cache directory, unlike a shared temp directory, is not writable
+		// by other users who could plant a symlink there.
+		if dir, err = driftReportDir(s.System.Name); err != nil {
+			return err
+		}
+	default:
+		dir = filepath.Join(*out, s.System.Name)
+	}
 	if err := rep.Write(dir); err != nil {
 		return err
 	}
@@ -378,6 +407,9 @@ func runDrift(path string, args []string) error {
 	}
 	if m := rep.Missing(); len(m) > 0 {
 		fmt.Printf("  missing modules: %s\n", strings.Join(m, ", "))
+		if s.System.Source != nil && !anyModulePath(s) {
+			fmt.Printf("  (an imported spec without module paths: record them with `aspect paths %s -repo <dir> -w`)\n", path)
+		}
 	}
 	if len(rep.Orphans) > 0 {
 		fmt.Printf("  unclaimed code: %s\n", strings.Join(rep.Orphans, ", "))
@@ -613,4 +645,96 @@ func runCheckInvariants(dir string, args []string) error {
 		fmt.Printf("  %s\n", v)
 	}
 	return fmt.Errorf("%d invariant violation(s) detected", len(allViolations))
+}
+
+// driftReportDir is where `drift -repo` writes its report by default:
+// <user cache dir>/aspect/drift/<system>.
+func driftReportDir(system string) (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("drift: no user cache directory for the report (%v); pass -report", err)
+	}
+	return filepath.Join(cache, "aspect", "drift", system), nil
+}
+
+// flagSet reports whether name was given on the command line, as opposed
+// to holding its default.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+func anyModulePath(s *spec.Spec) bool {
+	for _, m := range s.AllModules() {
+		if m.Path != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// runPaths recovers the package directory of every module of an imported
+// spec that lacks one, and with -w writes it into the spec files.
+func runPaths(path string, args []string) error {
+	fs := flag.NewFlagSet("paths", flag.ContinueOnError)
+	repo := fs.String("repo", ".", "the repository the spec was imported from")
+	write := fs.Bool("w", false, "write path: into the spec files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	s, err := spec.Load(path)
+	if err != nil {
+		return err
+	}
+	paths, problems, err := importer.RecoverPaths(s, *repo)
+	if err != nil {
+		return err
+	}
+	for _, name := range sortedNames(paths) {
+		fmt.Printf("%-40s path: %s\n", name, paths[name])
+	}
+	for _, p := range problems {
+		fmt.Fprintln(os.Stderr, "aspect:", p)
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("%d module(s) could not be placed; nothing written", len(problems))
+	}
+	if len(paths) == 0 {
+		fmt.Println("every module already has a path")
+		return nil
+	}
+	if !*write {
+		fmt.Printf("%d module(s) would get a path; rerun with -w to write them\n", len(paths))
+		return nil
+	}
+	files, err := spec.SetModulePaths(path, paths)
+	if err != nil {
+		return fmt.Errorf("%w (files already rewritten: %s)", err, listOrNone(files))
+	}
+	if _, _, err := loadValidated(path); err != nil {
+		return fmt.Errorf("after writing paths into %s: %w", listOrNone(files), err)
+	}
+	fmt.Printf("wrote %d path(s) into %d file(s)\n", len(paths), len(files))
+	return nil
+}
+
+func listOrNone(files []string) string {
+	if len(files) == 0 {
+		return "none"
+	}
+	return strings.Join(files, ", ")
+}
+
+func sortedNames(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

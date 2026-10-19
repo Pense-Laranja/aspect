@@ -123,16 +123,21 @@ Specs and code both change. `aspect drift` re-validates the code on disk
 against the spec without regenerating anything:
 
 ```sh
-aspect drift shop.yaml -out ./out              # after editing the spec or the code
-aspect drift shop.yaml -out ./out -no-llm      # presence, orphans and tests only
+aspect drift shop.yaml -out ./out                 # after editing the spec or the code
+aspect drift shop.yaml -out ./out -no-llm         # presence, orphans and tests only
+aspect drift _aspect/aspect.yaml -repo . -no-llm  # the repository the spec describes, in place
 ```
 
 It reports modules the spec names that have no code, code directories no
 module claims, modules whose tests fail, and, with a model, a fresh verdict
 per goal compared against the last `report.json` (or a `-baseline` you
 name): same, improved, regressed. It writes `DRIFT.md` and `drift.json`
-next to the code and exits non-zero when anything needs attention, so it
-can run in CI.
+next to the code (with `-repo`, under `<user cache dir>/aspect/drift/<system>`,
+or `-report DIR`) and exits non-zero when anything needs attention, so it can
+run in CI. `-repo` checks a repository in place and never writes to it: no
+`go mod tidy`, no manifest. An imported spec finds its modules through
+their `path`; one imported before `path` existed gets it back with
+`aspect paths _aspect/aspect.yaml -repo . -w`.
 
 ## Importing an existing system
 

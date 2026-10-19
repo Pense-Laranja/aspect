@@ -2,6 +2,7 @@ package spec
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -136,6 +137,7 @@ func Validate(s *Spec) Issues {
 	validateDatabases(c, x)
 	validateInterfaces(c, x)
 	validateModules(c, x)
+	validateModuleNesting(c, x)
 	validateTopology(c, x)
 	validateBriefs(c, s)
 	validateDependencies(c, s)
@@ -538,6 +540,51 @@ func validateInterfaces(c *collector, x *ctx) {
 	}
 }
 
+// validateModulePath checks a module's code directory: a clean relative
+// slash path inside the tier, used by one module only. Only the Go profile
+// places modules by path; the others derive the layout from the name.
+func validateModulePath(c *collector, p string, t *Tier, m *Module, seen map[string]string) {
+	switch {
+	case t.Language != "go":
+		c.add(Error, p, "module %q: path is supported only in Go tiers (this one is %s)", m.Name, t.Language)
+	case strings.Contains(m.Path, "\\") || path.IsAbs(m.Path) || path.Clean(m.Path) != m.Path:
+		c.add(Error, p, "module %q: path %q must be a clean relative slash path (\".\" for the root)", m.Name, m.Path)
+	case m.Path == ".." || strings.HasPrefix(m.Path, "../"):
+		c.add(Error, p, "module %q: path %q leaves the code root", m.Name, m.Path)
+	default:
+		if other, dup := seen[m.Path]; dup {
+			c.add(Error, p, "module %q: path %q is already module %q's", m.Name, m.Path, other)
+		}
+		seen[m.Path] = m.Name
+	}
+}
+
+// validateModuleNesting refuses a module placed by path inside the
+// directory of a Go module laid out by name: the latter owns everything
+// below <name>/, so the two would claim the same files, and its Coder could
+// write into the placed module's package.
+func validateModuleNesting(c *collector, x *ctx) {
+	for _, t := range x.tiers {
+		if t.Language != "go" {
+			continue
+		}
+		for i := range t.Modules {
+			m := &t.Modules[i]
+			if !m.Placed() {
+				continue
+			}
+			for _, o := range t.Modules {
+				if o.Placed() || o.Name == "" {
+					continue
+				}
+				if m.Path == o.Name || strings.HasPrefix(m.Path, o.Name+"/") {
+					c.add(Error, x.modulePath(t, i)+".path", "module %q: path %q lies inside %s/, which module %q owns entirely; give %q a path too", m.Name, m.Path, o.Name, o.Name, o.Name)
+				}
+			}
+		}
+	}
+}
+
 func validateModules(c *collector, x *ctx) {
 	s := x.s
 	if !x.multi && len(s.Modules) == 0 {
@@ -550,9 +597,13 @@ func validateModules(c *collector, x *ctx) {
 	surfaceConsumers := map[string][]string{}
 
 	for _, t := range x.tiers {
+		paths := map[string]string{}
 		for i := range t.Modules {
 			m := &t.Modules[i]
 			p := x.modulePath(t, i)
+			if m.Path != "" {
+				validateModulePath(c, p+".path", t, m, paths)
+			}
 			if m.Name == "" {
 				c.add(Error, p+".name", "is required")
 			} else if !identRe.MatchString(m.Name) {
@@ -814,7 +865,7 @@ func mapKeys(m map[string]string) map[string]bool {
 	return out
 }
 
-func sortedKeys(m map[string]bool) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

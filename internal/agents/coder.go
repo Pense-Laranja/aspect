@@ -7,6 +7,7 @@ import (
 
 	"github.com/eideroliveira/aspect/internal/lang"
 	"github.com/eideroliveira/aspect/internal/llm"
+	"github.com/eideroliveira/aspect/internal/spec"
 	"github.com/eideroliveira/aspect/internal/workspace"
 )
 
@@ -107,17 +108,17 @@ func (c *Coder) Generate(ctx context.Context, in CodeInput) (CodeOutput, llm.Res
 	if err != nil {
 		return out, resp, fmt.Errorf("coder: %w", err)
 	}
-	kept, dropped := in.Lang.SplitModuleFiles(in.Module.Name, out.Files, false)
+	kept, dropped := in.Lang.SplitModuleFiles(in.Module, out.Files, false)
 	out.Concerns = append(out.Concerns, droppedConcerns("Coder", dropped)...)
 	if in.Feedback != "" {
-		out.Removed = keepRemovals(in.Lang, in.Module.Name, out.Removed)
+		out.Removed = keepRemovals(in.Lang, in.Module, out.Removed)
 		kept = mergeFiles(in.Existing, kept, out.Removed)
 	} else {
 		out.Removed = nil
 	}
 	out.Files = kept
 	if len(out.Files) == 0 {
-		return out, resp, fmt.Errorf("coder: returned no implementation files inside %s", in.Lang.CodeDir(in.Module.Name))
+		return out, resp, fmt.Errorf("coder: returned no implementation files inside %s", lang.DirLabel(in.Lang.CodeDir(in.Module)))
 	}
 	return out, resp, nil
 }
@@ -172,7 +173,7 @@ func mergeFiles(existing, answered []workspace.File, removed []string) []workspa
 // of this module, so a repair cannot delete tests (which share the directory
 // in Go) or another module's code. The profile's filter decides, exactly as
 // it does for proposed files.
-func keepRemovals(p *lang.Profile, module string, paths []string) []string {
+func keepRemovals(p *lang.Profile, module *spec.Module, paths []string) []string {
 	files := make([]workspace.File, 0, len(paths))
 	for _, path := range paths {
 		files = append(files, workspace.File{Path: path, Content: "-"})

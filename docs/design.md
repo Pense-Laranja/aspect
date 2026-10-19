@@ -166,8 +166,8 @@ How each part of the spec is used by the agents:
 Deterministic checks every agent may run and cite:
 
 ```sh
-aspect validate <spec>            # the spec is well formed and closed
-aspect drift <spec> -out . -no-llm  # presence, orphans and tests against the code
+aspect validate <spec>               # the spec is well formed and closed
+aspect drift <spec> -repo . -no-llm  # presence, orphans and tests against the code
 ```
 
 A repository with no spec keeps its gates blocking. The judges review

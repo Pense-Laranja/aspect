@@ -41,6 +41,18 @@ func (t Task) tier() *spec.Tier {
 
 func (t Task) modulePath() string { return t.tier().ModulePath }
 
+// importPath is where the module's dependants import it from: the tier's
+// module path joined with the module's directory.
+func (t Task) importPath() string {
+	switch t.Module.Path {
+	case "":
+		return t.modulePath() + "/" + t.Module.Name
+	case ".":
+		return t.modulePath()
+	}
+	return t.modulePath() + "/" + t.Module.Path
+}
+
 // renderYAML gives the model the spec fragment exactly as the author wrote it.
 // YAML is more compact than JSON and matches the file the user is editing, so
 // the model's comments about the spec line up with what the user sees.
@@ -173,8 +185,8 @@ func renderContext(t Task) string {
 func renderModule(t Task, heading string) string {
 	m := t.Module
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\nModule: %s\nImport path: %s/%s\nCode directory: %s\nTest directory: %s\n\n```yaml\n%s```\n\n",
-		heading, m.Name, t.modulePath(), m.Name, t.Lang.CodeDir(m.Name), t.Lang.TestDir(m.Name), renderYAML(m))
+	fmt.Fprintf(&b, "# %s\n\nModule: %s\nImport path: %s\nCode directory: %s\nTest directory: %s\n\n```yaml\n%s```\n\n",
+		heading, m.Name, t.importPath(), lang.DirLabel(t.Lang.CodeDir(m)), lang.DirLabel(t.Lang.TestDir(m)), renderYAML(m))
 	if text := strings.TrimSpace(m.Brief.Text); text != "" {
 		fmt.Fprintf(&b, "## Module brief (%s)\n\nThe owner's own description of this module. It elaborates the spec above and is binding where it is more specific; where the two conflict, say so in concerns rather than choosing silently.\n\n%s\n\n", m.Brief.Path, text)
 	}

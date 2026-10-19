@@ -79,7 +79,7 @@ func TestRunMirrorsPackages(t *testing.T) {
 		Interfaces: []spec.Interface{{Name: "api", Kind: "http", Intent: "what clients call", Framework: "chi", Auth: "token", Provider: "chi + qor5 presets"}},
 	}}
 	cache := t.TempDir()
-	res, err := Run(context.Background(), fake, Options{Root: fixture, CacheDir: cache, Repository: "git@example.com:app.git", Commit: "abc123"})
+	res, err := Run(context.Background(), fake, Options{Root: fixture, CacheDir: cache, Repository: "git@example.com:app.git", Commit: "abc123", Exclude: []string{"cmd"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +92,9 @@ func TestRunMirrorsPackages(t *testing.T) {
 	}
 	if len(s.Modules) != 2 || s.Modules[0].Name != "store" || s.Modules[1].Name != "web" || strings.Join(s.Modules[1].DependsOn, ",") != "store" {
 		t.Fatalf("modules = %+v", s.Modules)
+	}
+	if s.Modules[0].Path != "store" || s.Modules[1].Path != "web" || strings.Join(s.System.Source.Exclude, ",") != "cmd" {
+		t.Fatalf("every mirrored module records its package directory, the source its exclusions: %q %q %v", s.Modules[0].Path, s.Modules[1].Path, s.System.Source.Exclude)
 	}
 	if s.System.Database == nil || s.System.Database.Engine != "postgres" || len(s.System.Database.Entities) != 1 || strings.Join(s.Modules[0].Entities, ",") != "Product" {
 		t.Fatalf("database = %+v, store entities = %v", s.System.Database, s.Modules[0].Entities)

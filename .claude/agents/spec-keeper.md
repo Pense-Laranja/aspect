@@ -77,7 +77,7 @@ spec is missing, so do not report it again.
    every file that matters, and `git log <base>..<head>`. Skip lockfiles,
    generated code and vendored trees.
 2. **Run the mechanical checks** and keep their output as evidence:
-   `aspect validate <spec>`, and `aspect drift <spec> -out . -no-llm` when the
+   `aspect validate <spec>`, and `aspect drift <spec> -repo . -no-llm` when the
    code lives where the spec's modules say it does.
 3. **Map every observable change to the spec.** For each behaviour the diff
    adds, removes or alters, find the module that owns it and the goal,

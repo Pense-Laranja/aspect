@@ -19,15 +19,15 @@ func init() {
 		Name:        "swift",
 		DisplayName: "Swift",
 		SourceExt:   ".swift",
-		CodeDir:     func(m string) string { return "Sources/" + PascalCase(m) + "/" },
-		TestDir:     func(m string) string { return "Tests/" + PascalCase(m) + "Tests/" },
+		CodeDir:     func(m *spec.Module) string { return "Sources/" + PascalCase(m.Name) + "/" },
+		TestDir:     func(m *spec.Module) string { return "Tests/" + PascalCase(m.Name) + "Tests/" },
 		IsTestFile:  func(p string) bool { return strings.HasPrefix(p, "Tests/") },
 		Init:        func(string, *spec.Spec, *spec.Tier) error { return nil },
 		Sync:        swiftSync,
-		Steps: func(module string) [][]string {
+		Steps: func(m *spec.Module) [][]string {
 			return [][]string{
 				{"swift", "build"},
-				{"swift", "test", "--filter", PascalCase(module) + "Tests"},
+				{"swift", "test", "--filter", PascalCase(m.Name) + "Tests"},
 			}
 		},
 		CoderRules: `Swift rules:
