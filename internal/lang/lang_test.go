@@ -200,3 +200,31 @@ func name(m *spec.Module) string {
 	}
 	return m.Name
 }
+
+// When directories overlap (the validator refuses this, Owner must not rely
+// on it) the deepest directory wins and a placed module wins a tie, whatever
+// order the modules come in.
+func TestOwnerArbitratesOverlaps(t *testing.T) {
+	p, _ := For("go")
+	byName := &spec.Module{Name: "modules"}                       // modules/ and everything below
+	api := &spec.Module{Name: "modules_api", Path: "modules/api"} // deeper than modules/
+	pkgByName := &spec.Module{Name: "pkg"}                        // pkg/ and below
+	pkgPlaced := &spec.Module{Name: "pkg_placed", Path: "pkg"}    // the same directory: a tie
+	want := map[string]*spec.Module{
+		"modules/api/api.go":   api,       // deeper wins over the recursive parent
+		"modules/x/x.go":       byName,    // only the recursive parent holds it
+		"modules/api/v2/v2.go": byName,    // a placed module never holds a subpackage
+		"pkg/a.go":             pkgPlaced, // tie on pkg/: the placed module
+		"pkg/sub/b.go":         pkgByName, // below pkg/: only the module by name
+	}
+	for _, mods := range [][]*spec.Module{
+		{byName, api, pkgByName, pkgPlaced},
+		{pkgPlaced, pkgByName, api, byName},
+	} {
+		for file, w := range want {
+			if got := p.Owner(mods, file); got != w {
+				t.Errorf("order %s...: Owner(%s) = %s, want %s", mods[0].Name, file, name(got), name(w))
+			}
+		}
+	}
+}

@@ -48,6 +48,24 @@ func TestValidateModulePaths(t *testing.T) {
 		}
 	}
 
+	// A path outside the root, written with backslashes, or nested inside a
+	// module laid out by name (which owns everything below <name>/).
+	for p, want := range map[string]string{
+		"/abs/api":             `path "/abs/api" must be a clean relative slash path`,
+		"modules\\api":         `path "modules\\api" must be a clean relative slash path`,
+		"modules_api/internal": `path "modules_api/internal" lies inside modules_api/, which module "modules_api" owns entirely`,
+		"modules_api":          `path "modules_api" lies inside modules_api/`,
+	} {
+		src := pathsSpec + "  - name: extra\n    path: '" + p + "'\n    intent: x\n    goals: [G1]\n"
+		s, err := Parse([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if text := join(Validate(s)); !strings.Contains(text, want) {
+			t.Errorf("path %q: missing issue containing %q\nall issues:\n%s", p, want, text)
+		}
+	}
+
 	s, err = Parse([]byte(strings.Replace(pathsSpec, "  module_path: example.com/shop\n", "  language: swift\n  module_path: example.com/shop\n", 1)))
 	if err != nil {
 		t.Fatal(err)

@@ -368,3 +368,29 @@ func snapshot(t *testing.T, root string) string {
 	}
 	return b.String()
 }
+
+// excluded reads `aspect import -exclude` entries as the inventory does: a
+// bare name anywhere in the tree, a relative path and everything below it,
+// with "./" and a trailing slash tolerated.
+func TestExcluded(t *testing.T) {
+	exclude := []string{"gen", "./internal/legacy/", "cmd"}
+	for dir, want := range map[string]bool{
+		"gen":                   true,
+		"api/gen":               true, // a name matches at any depth
+		"api/gen/v1":            true,
+		"internal/legacy":       true,
+		"internal/legacy/old":   true,
+		"internal/legacyx":      false, // a path prefix stops at a segment
+		"other/internal/legacy": false, // a path with a slash is anchored at the root
+		"cmd/tool":              true,
+		"cmdline":               false,
+		"generated":             false,
+	} {
+		if got := excluded(dir, exclude); got != want {
+			t.Errorf("excluded(%q) = %v, want %v", dir, got, want)
+		}
+	}
+	if excluded("gen", nil) || excluded("gen", []string{""}) {
+		t.Error("an empty list or entry excludes nothing")
+	}
+}

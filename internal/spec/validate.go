@@ -137,6 +137,7 @@ func Validate(s *Spec) Issues {
 	validateDatabases(c, x)
 	validateInterfaces(c, x)
 	validateModules(c, x)
+	validateModuleNesting(c, x)
 	validateTopology(c, x)
 	validateBriefs(c, s)
 	validateDependencies(c, s)
@@ -555,6 +556,32 @@ func validateModulePath(c *collector, p string, t *Tier, m *Module, seen map[str
 			c.add(Error, p, "module %q: path %q is already module %q's", m.Name, m.Path, other)
 		}
 		seen[m.Path] = m.Name
+	}
+}
+
+// validateModuleNesting refuses a module placed by path inside the
+// directory of a Go module laid out by name: the latter owns everything
+// below <name>/, so the two would claim the same files, and its Coder could
+// write into the placed module's package.
+func validateModuleNesting(c *collector, x *ctx) {
+	for _, t := range x.tiers {
+		if t.Language != "go" {
+			continue
+		}
+		for i := range t.Modules {
+			m := &t.Modules[i]
+			if !m.Placed() {
+				continue
+			}
+			for _, o := range t.Modules {
+				if o.Placed() || o.Name == "" {
+					continue
+				}
+				if m.Path == o.Name || strings.HasPrefix(m.Path, o.Name+"/") {
+					c.add(Error, x.modulePath(t, i)+".path", "module %q: path %q lies inside %s/, which module %q owns entirely; give %q a path too", m.Name, m.Path, o.Name, o.Name, o.Name)
+				}
+			}
+		}
 	}
 }
 

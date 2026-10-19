@@ -132,8 +132,8 @@ It reports modules the spec names that have no code, code directories no
 module claims, modules whose tests fail, and, with a model, a fresh verdict
 per goal compared against the last `report.json` (or a `-baseline` you
 name): same, improved, regressed. It writes `DRIFT.md` and `drift.json`
-next to the code (with `-repo`, under `$TMPDIR/aspect-drift/<system>`, or
-`-report DIR`) and exits non-zero when anything needs attention, so it can
+next to the code (with `-repo`, under `<user cache dir>/aspect/drift/<system>`,
+or `-report DIR`) and exits non-zero when anything needs attention, so it can
 run in CI. `-repo` checks a repository in place and never writes to it: no
 `go mod tidy`, no manifest. An imported spec finds its modules through
 their `path`; one imported before `path` existed gets it back with

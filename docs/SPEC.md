@@ -548,16 +548,17 @@ A module with a `path` is exactly one package. It owns the Go files in that
 directory and nothing below it (subpackages are other modules, or code no
 module claims), and its build and test steps run on that package only
 (`go test ./modules/api`, `go test .` for the root). A module without a
-`path` owns its directory and everything beneath it, as before. When two
-modules' directories contain a file, the deeper one owns it. Paths are
-clean relative slash paths, unique within a tier; they are valid only in Go
+`path` owns its directory and everything beneath it, as before, so a
+module with a `path` may not sit inside such a directory. Paths are clean
+relative slash paths, unique within a tier; they are valid only in Go
 tiers.
 
 A spec imported before `path` existed can get the field back from the
 repository with `aspect paths <spec> -repo <dir> -w`, which matches each
 module name against the packages on disk and writes `path:` under the
 module's `name:` in whichever file defines it. A module that no package
-maps to, or that several do, is reported and nothing is written.
+maps to, that several do, or whose package another module already holds,
+is reported and nothing is written. Tiers in other languages are skipped.
 
 ### Briefs
 
@@ -641,7 +642,7 @@ Interfaces
 Tiers
 - Every tier has `name`, `intent`, a supported `language`, `module_path` and modules; `external` is not a tier name; tier dependencies resolve and are acyclic.
 - Module `depends_on` resolves, is not the module itself, stays inside the tier, and is acyclic.
-- Module `path` is a clean relative slash path that stays inside the code root, is used by one module of the tier only, and appears only in Go tiers.
+- Module `path` is a clean relative slash path that stays inside the code root, is used by one module of the tier only, appears only in Go tiers, and does not lie inside the directory of a module laid out by name (`<name>/` owns everything below it).
 
 Topology
 - A declared `api_backend` has at least two tiers and at least one module consuming a surface provided by another tier.

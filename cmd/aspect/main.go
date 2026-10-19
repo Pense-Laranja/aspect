@@ -59,7 +59,7 @@ Drift flags:
   -repo DIR         check a repository in place instead (the code the spec describes, e.g. -repo .):
                     a single-tier spec's code is DIR, a tier's DIR/<tier>; nothing there is written
   -report DIR       where drift.json and DRIFT.md go (default out/<system>, or
-                    $TMPDIR/aspect-drift/<system> with -repo)
+                    <user cache dir>/aspect/drift/<system> with -repo)
   -baseline FILE    a previous report.json or drift.json to compare goal verdicts against
                     (default out/<system>/report.json when it exists)
   -no-llm           presence, orphans and tests only; no verdicts
@@ -325,6 +325,9 @@ func runDrift(path string, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *repo != "" && flagSet(fs, "out") {
+		return fmt.Errorf("drift: -out and -repo name two different places for the code; pass one")
+	}
 	s, _, err := loadValidated(path)
 	if err != nil {
 		return err
@@ -353,8 +356,12 @@ func runDrift(path string, args []string) error {
 	switch {
 	case dir != "":
 	case *repo != "":
-		// Never leave files in the repository being checked.
-		dir = filepath.Join(os.TempDir(), "aspect-drift", s.System.Name)
+		// Never leave files in the repository being checked. The user's
+		// cache directory, unlike a shared temp directory, is not writable
+		// by other users who could plant a symlink there.
+		if dir, err = driftReportDir(s.System.Name); err != nil {
+			return err
+		}
 	default:
 		dir = filepath.Join(*out, s.System.Name)
 	}
@@ -607,6 +614,28 @@ func runCheckInvariants(dir string, args []string) error {
 	return fmt.Errorf("%d invariant violation(s) detected", len(allViolations))
 }
 
+// driftReportDir is where `drift -repo` writes its report by default:
+// <user cache dir>/aspect/drift/<system>.
+func driftReportDir(system string) (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("drift: no user cache directory for the report (%v); pass -report", err)
+	}
+	return filepath.Join(cache, "aspect", "drift", system), nil
+}
+
+// flagSet reports whether name was given on the command line, as opposed
+// to holding its default.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
 func anyModulePath(s *spec.Spec) bool {
 	for _, m := range s.AllModules() {
 		if m.Path != "" {
@@ -652,13 +681,20 @@ func runPaths(path string, args []string) error {
 	}
 	files, err := spec.SetModulePaths(path, paths)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w (files already rewritten: %s)", err, listOrNone(files))
 	}
 	if _, _, err := loadValidated(path); err != nil {
-		return fmt.Errorf("after writing paths: %w", err)
+		return fmt.Errorf("after writing paths into %s: %w", listOrNone(files), err)
 	}
 	fmt.Printf("wrote %d path(s) into %d file(s)\n", len(paths), len(files))
 	return nil
+}
+
+func listOrNone(files []string) string {
+	if len(files) == 0 {
+		return "none"
+	}
+	return strings.Join(files, ", ")
 }
 
 func sortedNames(m map[string]string) []string {

@@ -23,6 +23,7 @@ func init() {
 		Init:        goInit,
 		Sync:        func(string, *spec.Spec, *spec.Tier, []string) error { return nil },
 		Prepare:     [][]string{{"go", "mod", "tidy"}},
+		Env:         []string{"GOFLAGS=-mod=mod", "GOWORK=off"},
 		Steps: func(m *spec.Module) [][]string {
 			return [][]string{
 				{"go", "vet", goPattern(m)},

@@ -175,7 +175,7 @@ func Run(ctx context.Context, c llm.Client, s *spec.Spec, p *plan.Plan, opts Opt
 		for _, st := range tp.Steps {
 			all = append(all, st.Module)
 		}
-		owned, unclaimed := assign(profile, pipeline.TierModules(tier), tree)
+		owned, unclaimed := assign(profile, tier.ModuleRefs(), tree)
 		var exclude []string
 		if s.System.Source != nil {
 			exclude = s.System.Source.Exclude

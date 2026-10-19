@@ -671,6 +671,20 @@ func (t *Tier) LanguageStack() *LanguageStack {
 	return nil
 }
 
+// ModuleRefs returns pointers to the tier's modules, in order.
+func (t *Tier) ModuleRefs() []*Module {
+	out := make([]*Module, len(t.Modules))
+	for i := range t.Modules {
+		out[i] = &t.Modules[i]
+	}
+	return out
+}
+
+// Placed reports whether the module's directory is its explicit Path (one
+// package, that directory only) rather than the language's layout by name
+// (the directory and everything below it).
+func (m *Module) Placed() bool { return m.Path != "" }
+
 // Module returns the tier's module with the given name, or nil.
 func (t *Tier) Module(name string) *Module {
 	for i := range t.Modules {

@@ -15,11 +15,13 @@ import (
 // module's path is the package directory whose ModuleName is the module's
 // name, found by the same inventory the import ran (honouring the spec's
 // source.exclude). root holds a single-tier spec's code; a tier's code is
-// root/<tier>.
+// root/<tier>. Tiers in other languages are skipped: only Go modules are
+// placed by path.
 //
-// A module that no package maps to, or that several do (modules/api and
-// modules_api are both modules_api), is not guessed: it is reported in
-// problems and left out of paths.
+// A module that no package maps to, that several do (modules/api and
+// modules_api are both modules_api), or whose package another module
+// already holds by path, is not guessed: it is reported in problems and
+// left out of paths.
 func RecoverPaths(s *spec.Spec, root string) (paths map[string]string, problems []string, err error) {
 	paths = map[string]string{}
 	var exclude []string
@@ -27,17 +29,20 @@ func RecoverPaths(s *spec.Spec, root string) (paths map[string]string, problems 
 		exclude = s.System.Source.Exclude
 	}
 	for _, t := range s.EffectiveTiers() {
+		if t.Language != "go" {
+			continue
+		}
 		var missing []*spec.Module
-		for i := range t.Modules {
-			if t.Modules[i].Path == "" {
-				missing = append(missing, &t.Modules[i])
+		taken := map[string]string{} // path -> module already placed there
+		for _, m := range t.ModuleRefs() {
+			if m.Placed() {
+				taken[m.Path] = m.Name
+			} else {
+				missing = append(missing, m)
 			}
 		}
 		if len(missing) == 0 {
 			continue
-		}
-		if t.Language != "go" {
-			return nil, nil, fmt.Errorf("paths: tier %q is %s; only Go modules are placed by path", t.Name, t.Language)
 		}
 		dir := filepath.Join(root, t.Name)
 		inv, err := analyze.Go(dir, analyze.Options{Exclude: exclude})
@@ -47,13 +52,17 @@ func RecoverPaths(s *spec.Spec, root string) (paths map[string]string, problems 
 		byName := map[string][]string{}
 		for _, p := range inv.Packages {
 			name := ModuleName(p.Dir)
-			byName[name] = append(byName[name], ModulePath(p.Dir))
+			byName[name] = append(byName[name], ModuleDir(p.Dir))
 		}
 		for _, m := range missing {
 			switch dirs := byName[m.Name]; len(dirs) {
 			case 0:
 				problems = append(problems, fmt.Sprintf("module %s: no package under %s maps to it", m.Name, dir))
 			case 1:
+				if other, ok := taken[dirs[0]]; ok {
+					problems = append(problems, fmt.Sprintf("module %s: its package %s is already module %s's path", m.Name, dirs[0], other))
+					continue
+				}
 				paths[m.Name] = dirs[0]
 			default:
 				sort.Strings(dirs)

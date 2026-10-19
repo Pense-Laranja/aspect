@@ -141,7 +141,7 @@ func Toolchain(p *lang.Profile, s *spec.Spec, t *spec.Tier) workspace.Toolchain 
 		Steps: func(module string) [][]string {
 			return append(append([][]string{}, p.Prepare...), p.Steps(t.Module(module))...)
 		},
-		Env: []string{"GOFLAGS=-mod=mod", "GOWORK=off"},
+		Env: p.Env,
 	}
 }
 
@@ -154,16 +154,6 @@ func InPlaceToolchain(p *lang.Profile, t *spec.Tier) workspace.Toolchain {
 		SkipDir:   p.SkipDir,
 		Steps:     func(module string) [][]string { return p.Steps(t.Module(module)) },
 	}
-}
-
-// TierModules returns pointers to a tier's modules, the form lang.Profile's
-// Owner takes.
-func TierModules(t *spec.Tier) []*spec.Module {
-	out := make([]*spec.Module, len(t.Modules))
-	for i := range t.Modules {
-		out[i] = &t.Modules[i]
-	}
-	return out
 }
 
 // TierDir is where a tier's code goes: out/<system>/ for a single-tier
@@ -461,7 +451,7 @@ func dependencyFiles(ws *workspace.Workspace, p *lang.Profile, t *spec.Tier, dep
 	for _, d := range deps {
 		want[d] = true
 	}
-	mods := TierModules(t)
+	mods := t.ModuleRefs()
 	var out []workspace.File
 	for _, f := range tree {
 		if p.IsTestFile(f.Path) {

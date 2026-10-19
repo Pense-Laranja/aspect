@@ -51,6 +51,9 @@ type Profile struct {
 	Prepare [][]string
 	// Steps are the commands, run in root, that build and test one module.
 	Steps func(m *spec.Module) [][]string
+	// Env is added to the environment of Prepare and Steps in a workspace
+	// Aspect generated. A repository checked in place keeps its own.
+	Env []string
 	// CheckImports enforces the spec's import allowlist. May be nil.
 	CheckImports func(files []workspace.File, allowed []string) []workspace.ImportViolation
 
@@ -119,7 +122,7 @@ func (p *Profile) SplitModuleFiles(m *spec.Module, files []workspace.File, wantT
 		switch {
 		case raw == "" || clean == "." || path.IsAbs(clean) || hasDotDot(clean):
 			dropped = append(dropped, Dropped{raw, "path is empty, absolute, or leaves the module directory"})
-		case !within(clean, dir, m.Path == ""):
+		case !within(clean, dir, !m.Placed()):
 			dropped = append(dropped, Dropped{raw, fmt.Sprintf("outside the module's %s directory %s", role, DirLabel(dir))})
 		case !strings.HasSuffix(clean, p.SourceExt):
 			dropped = append(dropped, Dropped{raw, "not a " + p.SourceExt + " source file"})
@@ -142,31 +145,24 @@ func (p *Profile) SplitModuleFiles(m *spec.Module, files []workspace.File, wantT
 	return kept, dropped
 }
 
-// Owns reports whether file (a slash path relative to the tier's code root)
-// sits in m's code or test directory. A module placed by an explicit path
-// is one package, so it owns that directory only; a module laid out by
-// name owns everything beneath its directory. Owns does not arbitrate
-// between modules; Owner does.
-func (p *Profile) Owns(m *spec.Module, file string) bool {
-	recursive := m.Path == ""
-	return within(file, p.CodeDir(m), recursive) || within(file, p.TestDir(m), recursive)
-}
-
-// Owner returns the module among mods that owns file, or nil. When several
-// directories contain it the deepest wins, and on a tie the module placed
-// by an explicit path: a module at modules/api keeps its files even when
-// another module is laid out at modules/.
+// Owner returns the module among mods that owns file (a slash path relative
+// to the tier's code root), or nil. A module placed by path is one package
+// and holds only the files directly in its directory; a module laid out by
+// name holds everything beneath its directory. The validator keeps those
+// from overlapping, but Owner still arbitrates for a spec it has not
+// checked: the deepest directory wins, and on a tie the placed module.
 func (p *Profile) Owner(mods []*spec.Module, file string) *spec.Module {
 	var best *spec.Module
-	bestLen, bestExact := -1, false
+	bestLen := -1
 	for _, m := range mods {
-		recursive := m.Path == ""
 		for _, dir := range []string{p.CodeDir(m), p.TestDir(m)} {
-			if !within(file, dir, recursive) {
+			if !within(file, dir, !m.Placed()) {
 				continue
 			}
-			if len(dir) > bestLen || (len(dir) == bestLen && !recursive && !bestExact) {
-				best, bestLen, bestExact = m, len(dir), !recursive
+			deeper := len(dir) > bestLen
+			placedWinsTie := len(dir) == bestLen && m.Placed() && !best.Placed()
+			if deeper || placedWinsTie {
+				best, bestLen = m, len(dir)
 			}
 		}
 	}

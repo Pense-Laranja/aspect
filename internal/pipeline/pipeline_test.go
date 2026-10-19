@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eideroliveira/aspect/internal/agents"
+	"github.com/eideroliveira/aspect/internal/lang"
 	"github.com/eideroliveira/aspect/internal/llm"
 	"github.com/eideroliveira/aspect/internal/plan"
 	"github.com/eideroliveira/aspect/internal/spec"
@@ -534,5 +535,57 @@ func TestSameFailureIgnoresVolatileOutput(t *testing.T) {
 	}
 	if got := changed(before, before[:1]); strings.Join(got, ",") != "b.go (removed)" {
 		t.Fatalf("changed = %v", got)
+	}
+}
+
+// dependencyFiles hands the Coder its dependencies' implementation files by
+// ownership: a placed dependency gives its one package, never a sibling
+// sharing its prefix, a subpackage, or its tests.
+func TestDependencyFilesByOwnership(t *testing.T) {
+	root := t.TempDir()
+	for p, c := range map[string]string{
+		"modules/api/api.go":      "package api\n",
+		"modules/api/api_test.go": "package api\n",
+		"modules/api/v2/v2.go":    "package v2\n",
+		"modules/apikeys/keys.go": "package apikeys\n",
+		"store/store.go":          "package store\n",
+		"store/sub/sub.go":        "package sub\n",
+		"shop.go":                 "package shop\n",
+	} {
+		abs := filepath.Join(root, p)
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws, err := workspace.New(root, workspace.Toolchain{SourceExt: ".go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tier := &spec.Tier{Language: "go", Modules: []spec.Module{
+		{Name: "root", Path: "."},
+		{Name: "modules_api", Path: "modules/api"},
+		{Name: "modules_apikeys", Path: "modules/apikeys"},
+		{Name: "store"}, // laid out by name: store/ and below
+	}}
+	p, _ := lang.For("go")
+	for deps, want := range map[string]string{
+		"modules_api": "modules/api/api.go",
+		"store":       "store/store.go,store/sub/sub.go",
+		"root":        "shop.go",
+	} {
+		files, err := dependencyFiles(ws, p, tier, strings.Split(deps, ","))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, f := range files {
+			got = append(got, f.Path)
+		}
+		if strings.Join(got, ",") != want {
+			t.Errorf("dependencyFiles(%s) = %v, want %s", deps, got, want)
+		}
 	}
 }
