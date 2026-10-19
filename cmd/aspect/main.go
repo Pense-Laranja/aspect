@@ -42,6 +42,10 @@ Usage:
   aspect gate extract -o FILE [input]  save the report an agent printed (claude -p output)
   aspect review [flags]                run the review agents on Gemini and gate the change;
                                        exit 1 when the gates block, 2 when there is no verdict
+  aspect review status [run-id]        a run's agents and outcome (the current run; live while it runs)
+  aspect review findings [run-id] [-severity S] [-agent A]   a run's findings, most severe first
+  aspect review compare <run-a> <run-b>                     two runs side by side, agent by agent
+  aspect review runs [-limit N]        the repository's runs, newest first
 
 Split flags:
   -n                list the files split would write, and their sizes, without writing

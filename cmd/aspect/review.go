@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/eideroliveira/aspect/internal/gate"
 	"github.com/eideroliveira/aspect/internal/review"
 )
 
@@ -23,6 +24,12 @@ func (e exitCode) Error() string { return e.msg }
 // exits 0 on pass or warn, 1 when the gates block, and 2 when there is no
 // verdict (a gate agent has no report), which must not read as a pass.
 func runReview(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "status", "findings", "compare", "runs":
+			return runReviewRead(args[0], args[1:])
+		}
+	}
 	cfg := review.ConfigFromEnv()
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	repo := fs.String("repo", cfg.DefaultRepo, "repository to review")
@@ -69,4 +76,91 @@ func runReview(args []string) error {
 		return exitCode{1, "review gates blocked"}
 	}
 	return exitCode{2, fmt.Sprintf("review gates gave no verdict (%s): a gate agent has no report", res.Outcome)}
+}
+
+// readArgs are the parsed arguments of `aspect review status|findings|
+// compare|runs`.
+type readArgs struct {
+	repo, severity, agent string
+	limit                 int
+	runs                  []string // the run ids given
+}
+
+// parseReadArgs parses a read subcommand's flags and run ids, which may come
+// in any order (`findings RUN -severity high`), and checks how many run ids
+// the subcommand takes.
+func parseReadArgs(sub string, args []string, defaultRepo string) (readArgs, error) {
+	var a readArgs
+	fs := flag.NewFlagSet("review "+sub, flag.ContinueOnError)
+	fs.StringVar(&a.repo, "repo", defaultRepo, "repository whose .review/ runs to read")
+	fs.StringVar(&a.severity, "severity", "", "findings: only this severity")
+	fs.StringVar(&a.agent, "agent", "", "findings: only this agent's")
+	fs.IntVar(&a.limit, "limit", 20, "runs: how many, newest first")
+	// flag stops at the first argument that is not a flag, so parse again
+	// after each run id to let flags follow it.
+	for len(args) > 0 {
+		if err := fs.Parse(args); err != nil {
+			return a, err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		a.runs = append(a.runs, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+	want := map[string][2]int{"status": {0, 1}, "findings": {0, 1}, "compare": {2, 2}, "runs": {0, 0}}[sub]
+	if n := len(a.runs); n < want[0] || n > want[1] {
+		return a, fmt.Errorf("review %s: takes %d to %d run ids, got %d (%v)", sub, want[0], want[1], n, a.runs)
+	}
+	if !review.ValidSeverity(a.severity) {
+		return a, fmt.Errorf("review %s: -severity must be one of %v, got %q", sub, gate.Severities, a.severity)
+	}
+	return a, nil
+}
+
+// runReviewRead reads earlier runs: status (a run's agents, live while it
+// runs), findings, compare (two runs side by side) and runs (the list).
+func runReviewRead(sub string, args []string) error {
+	a, err := parseReadArgs(sub, args, review.ConfigFromEnv().DefaultRepo)
+	if err != nil {
+		return err
+	}
+	switch sub {
+	case "status", "findings":
+		run := ""
+		if len(a.runs) == 1 {
+			run = a.runs[0]
+		}
+		r, err := review.LoadRun(a.repo, run)
+		if err != nil {
+			return err
+		}
+		if sub == "status" {
+			review.PrintStatus(os.Stdout, r)
+			return nil
+		}
+		if review.PrintFindings(os.Stdout, r, a.severity, a.agent) == 0 {
+			fmt.Printf("No findings in run %s match.\n", r.RunID)
+		}
+		return nil
+	case "compare":
+		x, err := review.LoadRun(a.repo, a.runs[0])
+		if err != nil {
+			return err
+		}
+		y, err := review.LoadRun(a.repo, a.runs[1])
+		if err != nil {
+			return err
+		}
+		review.PrintCompare(os.Stdout, x, y)
+		return nil
+	case "runs":
+		runs, err := review.LoadRuns(a.repo, a.limit)
+		if err != nil {
+			return err
+		}
+		review.PrintRuns(os.Stdout, runs)
+		return nil
+	}
+	return fmt.Errorf("review: unknown subcommand %q", sub)
 }
