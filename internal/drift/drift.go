@@ -33,6 +33,11 @@ type Options struct {
 	// OutDir is the directory that holds out/<system>[/<tier>], as given to
 	// `aspect run -out`.
 	OutDir string
+	// Repo, when set, is a repository checked in place instead of generated
+	// output: a single-tier spec's code is Repo itself, a tier's is
+	// Repo/<tier>. Drift then never writes there: no manifest is created or
+	// synced and no Prepare step (go mod tidy) runs.
+	Repo string
 	// Baseline is a previous report.json (from run or drift) to compare
 	// goal verdicts against. Optional.
 	Baseline string
@@ -147,11 +152,18 @@ func Run(ctx context.Context, c llm.Client, s *spec.Spec, p *plan.Plan, opts Opt
 		if err != nil {
 			return rep, err
 		}
-		root := pipeline.TierDir(opts.OutDir, s.System.Name, tier.Name)
-		if _, err := os.Stat(root); err != nil {
-			return rep, fmt.Errorf("drift: no code for %s at %s", tierLabel(tier), root)
+		root, tc := pipeline.TierDir(opts.OutDir, s.System.Name, tier.Name), pipeline.Toolchain(profile, s, tier)
+		if opts.Repo != "" {
+			root, tc = filepath.Join(opts.Repo, tier.Name), pipeline.InPlaceToolchain(profile, tier)
 		}
-		ws, err := workspace.New(root, pipeline.Toolchain(profile, s, tier))
+		if _, err := os.Stat(root); err != nil {
+			hint := ""
+			if opts.Repo == "" {
+				hint = " (for code that is not aspect run output, such as the repository the spec describes, use -repo)"
+			}
+			return rep, fmt.Errorf("drift: no code for %s at %s%s", tierLabel(tier), root, hint)
+		}
+		ws, err := workspace.New(root, tc)
 		if err != nil {
 			return rep, err
 		}
@@ -163,7 +175,12 @@ func Run(ctx context.Context, c llm.Client, s *spec.Spec, p *plan.Plan, opts Opt
 		for _, st := range tp.Steps {
 			all = append(all, st.Module)
 		}
-		rep.Orphans = append(rep.Orphans, orphans(tier, profile, tree, all)...)
+		owned, unclaimed := assign(profile, pipeline.TierModules(tier), tree)
+		var exclude []string
+		if s.System.Source != nil {
+			exclude = s.System.Source.Exclude
+		}
+		rep.Orphans = append(rep.Orphans, orphans(tier, unclaimed, exclude)...)
 		if err := ws.Sync(all); err != nil {
 			return rep, err
 		}
@@ -173,13 +190,13 @@ func Run(ctx context.Context, c llm.Client, s *spec.Spec, p *plan.Plan, opts Opt
 				return rep, ctx.Err()
 			}
 			md := ModuleDrift{Tier: tier.Name, Module: step.Module}
-			code, tests := split(profile, tree, step.Module)
+			code, tests := split(profile, owned[step.Module])
 			for _, f := range append(append([]workspace.File{}, code...), tests...) {
 				md.Files = append(md.Files, f.Path)
 			}
 			md.Present = len(code) > 0
 			if !md.Present {
-				logf("== %s: missing (no files under %s)", step.Module, profile.CodeDir(step.Module))
+				logf("== %s: missing (no files in %s)", step.Module, lang.DirLabel(profile.CodeDir(tier.Module(step.Module))))
 				md.Verdict = agents.Verdict{Module: step.Module, IntentStatus: agents.Violated, IntentRationale: "the module has no code"}
 				for _, g := range step.Goals {
 					md.Verdict.Goals = append(md.Verdict.Goals, agents.GoalVerdict{ID: g, Status: agents.NotAchieved, Evidence: "no code on disk"})
@@ -253,35 +270,45 @@ func tierLabel(t *spec.Tier) string {
 	return "tier " + t.Name
 }
 
-// split returns a module's implementation and test files from the tree.
-func split(p *lang.Profile, tree []workspace.File, module string) (code, tests []workspace.File) {
+// assign gives every file of the tree to the module that owns it (see
+// lang.Profile.Owner); the rest are unclaimed.
+func assign(p *lang.Profile, mods []*spec.Module, tree []workspace.File) (owned map[string][]workspace.File, unclaimed []workspace.File) {
+	owned = map[string][]workspace.File{}
 	for _, f := range tree {
-		switch {
-		case strings.HasPrefix(f.Path, p.TestDir(module)) && p.IsTestFile(f.Path):
+		if m := p.Owner(mods, f.Path); m != nil {
+			owned[m.Name] = append(owned[m.Name], f)
+		} else {
+			unclaimed = append(unclaimed, f)
+		}
+	}
+	return owned, unclaimed
+}
+
+// split separates a module's files into implementation and tests.
+func split(p *lang.Profile, files []workspace.File) (code, tests []workspace.File) {
+	for _, f := range files {
+		if p.IsTestFile(f.Path) {
 			tests = append(tests, f)
-		case strings.HasPrefix(f.Path, p.CodeDir(module)) && !p.IsTestFile(f.Path):
+		} else {
 			code = append(code, f)
 		}
 	}
 	return code, tests
 }
 
-// orphans finds source directories no module of the tier claims.
-func orphans(t *spec.Tier, p *lang.Profile, tree []workspace.File, modules []string) []string {
-	claimed := func(path string) bool {
-		for _, m := range modules {
-			if strings.HasPrefix(path, p.CodeDir(m)) || strings.HasPrefix(path, p.TestDir(m)) {
-				return true
-			}
-		}
-		return false
-	}
+// orphans lists the directories of unclaimed files. Loose files in the root
+// are not reported (a generated project keeps its entry point there), nor
+// directories the import excluded.
+func orphans(t *spec.Tier, unclaimed []workspace.File, exclude []string) []string {
 	seen := map[string]bool{}
-	for _, f := range tree {
-		if claimed(f.Path) || !strings.Contains(f.Path, "/") {
+	for _, f := range unclaimed {
+		if !strings.Contains(f.Path, "/") {
 			continue
 		}
 		dir := filepath.ToSlash(filepath.Dir(f.Path))
+		if excluded(dir, exclude) {
+			continue
+		}
 		label := dir
 		if t.Name != "" {
 			label = t.Name + "/" + dir
@@ -293,6 +320,28 @@ func orphans(t *spec.Tier, p *lang.Profile, tree []workspace.File, modules []str
 		out = append(out, k)
 	}
 	return out
+}
+
+// excluded matches a directory against `aspect import -exclude` entries the
+// way the inventory does: an entry names a directory anywhere in the tree,
+// or a relative path and everything below it.
+func excluded(dir string, exclude []string) bool {
+	segments := strings.Split(dir, "/")
+	for _, ex := range exclude {
+		ex = strings.TrimSuffix(strings.TrimPrefix(ex, "./"), "/")
+		if ex == "" {
+			continue
+		}
+		if dir == ex || strings.HasPrefix(dir, ex+"/") {
+			return true
+		}
+		for _, seg := range segments {
+			if seg == ex {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func compare(prev, now agents.GoalStatus) Change {

@@ -29,6 +29,9 @@ type File struct {
 type Toolchain struct {
 	// SourceExt selects the files ReadTree returns.
 	SourceExt string
+	// SkipDir, given a directory below the root, reports whether ReadTree
+	// leaves it out (directories the toolchain itself ignores). May be nil.
+	SkipDir func(dir string) bool
 	// Protected are manifest basenames agents may not write (go.mod, Package.swift).
 	Protected []string
 	// Init writes the manifest once when the workspace is created.
@@ -37,6 +40,8 @@ type Toolchain struct {
 	Sync func(root string, modules []string) error
 	// Steps are the commands, run in root, that build and test one module.
 	Steps func(module string) [][]string
+	// Env is added to the process environment of every step.
+	Env []string
 }
 
 // Workspace is one generated project on disk.
@@ -134,16 +139,24 @@ func (w *Workspace) safePath(p string) (string, error) {
 }
 
 // ReadTree returns every source file under the root, sorted by path, so agents
-// can be shown the current state of the project.
+// can be shown the current state of the project. A root that is a symlink
+// (an -out directory linking to a checkout) is resolved first, because
+// WalkDir does not descend into a symlinked root; symlinks below the root
+// are not followed.
 func (w *Workspace) ReadTree() ([]File, error) {
+	root := w.Root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	var files []File
-	err := filepath.WalkDir(w.Root, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			// Build products are large and never interesting to agents.
-			if d.Name() == ".build" && path != w.Root {
+			// Hidden directories hold build products (.build), history and
+			// tool state (.git, .claude), never the project's code.
+			if path != root && (strings.HasPrefix(d.Name(), ".") || (w.tc.SkipDir != nil && w.tc.SkipDir(path))) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -151,7 +164,7 @@ func (w *Workspace) ReadTree() ([]File, error) {
 		if w.tc.SourceExt != "" && !strings.HasSuffix(path, w.tc.SourceExt) {
 			return nil
 		}
-		rel, err := filepath.Rel(w.Root, path)
+		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
@@ -181,7 +194,7 @@ func (w *Workspace) Test(ctx context.Context, module string) (Result, error) {
 		fmt.Fprintf(&out, "$ %s\n", strings.Join(args, " "))
 		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 		cmd.Dir = w.Root
-		cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+		cmd.Env = append(os.Environ(), w.tc.Env...)
 		b, err := cmd.CombinedOutput()
 		out.Write(b)
 		if ctx.Err() != nil {

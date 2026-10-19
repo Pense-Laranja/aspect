@@ -171,10 +171,20 @@ judges the whole. Three things fall out that a build cannot tell you:
 - **missing** modules: named in the spec, no code on disk (their goals
   become `not_achieved`);
 - **orphans**: source directories no module claims, the usual sign that
-  the spec fell behind the code;
+  the spec fell behind the code (directories the import excluded, and
+  what the toolchain ignores, such as `testdata`, hidden directories and
+  nested Go modules, are not code);
 - **regressions**: goal statuses compared with a baseline `report.json` or
   `drift.json`, so a change to either side shows up as same, improved or
   regressed.
+
+Every file goes to exactly one module: the one whose directory holds it,
+the deepest when several do. A module placed by `path` (what `aspect
+import` writes) owns its one package directory, so `modules/api` never
+takes `modules/apikeys/` or `modules/api/v2/`, and the root module owns
+only the root's files. `-repo DIR` points drift at a repository instead of
+`aspect run` output; it then writes nothing there (no manifest, no `go mod
+tidy`), and a symlinked `-out` entry is followed.
 
 `-no-llm` keeps the deterministic part only, which is enough for a CI gate
 on presence and tests.
