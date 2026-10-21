@@ -124,6 +124,7 @@ func TestCompareCopy(t *testing.T) {
 		"same":          {head + "<!-- ASPECT.md -->\n\n" + doc, nil, false},
 		"with others":   {head + "<!-- AGENTS.md -->\n\nAgents." + docSeparator + "<!-- ASPECT.md -->\n\n" + doc + docSeparator + "<!-- README.md -->\n\nUsage.", []string{"AGENTS.md", "README.md"}, false},
 		"changed":       {head + "<!-- ASPECT.md -->\n\nOld rules.", nil, true},
+		"shortened":     {head + "<!-- ASPECT.md -->\n\n" + doc + "\n\nA rule since removed.", nil, true},
 		"written after": {head + "<!-- CLAUDE.md -->\n\nRules.", []string{"CLAUDE.md"}, false},
 		"not a copy":    {"Written by hand.", nil, true},
 	} {

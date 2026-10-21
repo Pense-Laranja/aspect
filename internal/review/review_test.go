@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eideroliveira/aspect/internal/llm"
+	"github.com/eideroliveira/aspect/internal/spec"
 )
 
 // The pipeline must leave no report for a gate agent that failed, record a
@@ -807,7 +808,7 @@ func TestOnlyCommittedSpecFilesReachThePrompt(t *testing.T) {
 	if !strings.Contains(prompt, "A() never panics.") {
 		t.Error("the committed rules are still shown")
 	}
-	if !strings.Contains(res.Plan.SpecNote, "briefs not committed at head were not shown: module root (NOTES.md)") {
+	if !strings.Contains(res.Plan.SpecNote, "briefs not committed at head as they are in the checkout were not shown: module root (NOTES.md)") {
 		t.Errorf("note = %q", res.Plan.SpecNote)
 	}
 
@@ -822,7 +823,59 @@ func TestOnlyCommittedSpecFilesReachThePrompt(t *testing.T) {
 	if p := again.model.prompts["red-team"]; strings.Contains(p, "### Specification") {
 		t.Error("a spec with an uncommitted fragment is not shown at all")
 	}
-	if !strings.HasPrefix(res.Plan.SpecNote, specNotCommitted) || !strings.Contains(res.Plan.SpecNote, "_aspect/modules/root.yaml") {
+	if !strings.HasPrefix(res.Plan.SpecNote, "spec files not committed at head") || !strings.Contains(res.Plan.SpecNote, "_aspect/modules/root.yaml") {
 		t.Errorf("note = %q", res.Plan.SpecNote)
 	}
+}
+
+// A committed symbolic link is committed, but what it leads to may not be
+// (a .env in the checkout); a committed file edited in the checkout is not
+// what head holds. Neither reaches a prompt, and a head git cannot read
+// shows nothing.
+func TestKeepCommittedComparesContent(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: root, path: ., intent: a, goals: [G1], brief: rules.md}\n  - {name: other, path: other, intent: b, goals: [G1], brief: other.md}\n")
+	writeFile(t, filepath.Join(repo, ".env"), "AWS_SECRET=not-for-a-model\n")
+	writeFile(t, filepath.Join(repo, ".gitignore"), ".review/\n.env\n")
+	if err := os.Symlink("../.env", filepath.Join(repo, "_aspect", "rules.md")); err != nil {
+		t.Skip("symbolic links unavailable:", err)
+	}
+	writeFile(t, filepath.Join(repo, "_aspect/other.md"), "Committed text.\n")
+	gitIn(t, repo, "add", ".gitignore", "_aspect")
+	gitIn(t, repo, "commit", "-q", "-m", "spec")
+	writeFile(t, filepath.Join(repo, "_aspect/other.md"), "Edited, not committed.\n")
+	head := strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
+
+	sp, err := spec.Load(filepath.Join(repo, "_aspect", "aspect.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	note, none := keepCommitted(context.Background(), repo, head, sp)
+	if none {
+		t.Fatalf("the spec's own files are committed as they are: %s", note)
+	}
+	if sp.Module("root").Brief.Text != "" || sp.Module("other").Brief.Text != "" {
+		t.Errorf("briefs kept: %q / %q", sp.Module("root").Brief.Text, sp.Module("other").Brief.Text)
+	}
+	for _, want := range []string{"module root (_aspect/rules.md)", "module other (_aspect/other.md)"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note %q lacks %q", note, want)
+		}
+	}
+
+	sp, _ = spec.Load(filepath.Join(repo, "_aspect", "aspect.yaml"))
+	if note, none := keepCommitted(context.Background(), repo, "no-such-revision", sp); !none || !strings.Contains(note, "could not check the spec against head") {
+		t.Errorf("a head git cannot read must show nothing: %v %q", none, note)
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return string(out)
 }

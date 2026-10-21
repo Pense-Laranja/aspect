@@ -160,6 +160,6 @@ func (e *Engine) reuse(ctx context.Context, repo, dir string, cfg *gate.Config, 
 	return &Result{
 		RunID: runID, RunDir: dir, Cached: true,
 		PR: firstNonEmpty(pr.Number, asText(status.Get("pr"))), PRURL: firstNonEmpty(pr.URL, asText(status.Get("pr_url"))),
-		Plan: plan, Outcome: outcome, Rendered: rendered, Published: published,
+		Plan: runPlan, Outcome: outcome, Rendered: rendered, Published: published,
 	}, nil
 }

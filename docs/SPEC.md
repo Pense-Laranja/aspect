@@ -730,8 +730,11 @@ its directory by name), or when it is the module's brief or the fragment the
 module is written in. A rule stated in a module's constraints or invariants
 is therefore checked on every change to that module; one kept only in a
 document no module references is not. Only what is committed at the
-change's head reaches a prompt: a brief that is not committed is left out,
-and a spec with an uncommitted file of its own is not shown at all. Either
+change's head, as it is there, reaches a prompt: a brief that is not a
+regular file at head with the content the checkout has (uncommitted, edited
+since, or a committed symbolic link, which could lead to an untracked
+`.env`) is left out, and a spec with such a file of its own is not shown at
+all. Either
 way the review's result says what the reviewers were not shown.
 
 ---

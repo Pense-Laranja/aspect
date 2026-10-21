@@ -223,9 +223,9 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 // (plan.Agents[i].Modules), within Config.SpecBudget. Reviewers have no
 // tools; this is how a rule written in the spec reaches them. The spec is
 // read from the working tree, as the plan's modules were, but only what is
-// committed at the change's head reaches a prompt: a brief or an included
-// file that is not (a .env beside the code, a credentials file a developer
-// keeps in the checkout) is never sent. A spec fragment that is not
+// committed at the change's head, as it is there, reaches a prompt (see
+// keepCommitted): a brief or an included file that is not (a .env beside
+// the code, or a committed link to one) is never sent. A spec fragment that is not
 // committed leaves the reviewers without any of the spec; a brief that is
 // not, without that brief. With no spec or a zero budget, every agent is
 // shown nothing. Whatever the reviewers were not shown, and why, goes in
@@ -241,9 +241,9 @@ func (e *Engine) specContexts(ctx context.Context, repo string, plan *gate.Plan)
 		plan.SpecNote = fmt.Sprintf("spec %s did not load, so the reviewers were shown none of it: %v", plan.Spec, err)
 		return none
 	}
-	if note := keepCommitted(ctx, repo, plan.Head, sp); note != "" {
+	if note, showNone := keepCommitted(ctx, repo, plan.Head, sp); note != "" {
 		plan.SpecNote = note
-		if strings.HasPrefix(note, specNotCommitted) {
+		if showNone {
 			return none
 		}
 	}
@@ -260,59 +260,123 @@ func (e *Engine) specContexts(ctx context.Context, repo string, plan *gate.Plan)
 	}
 }
 
-// specNotCommitted opens the note for a spec whose own files are not all
-// committed at head.
-const specNotCommitted = "spec files not committed at head"
-
-// keepCommitted drops from sp the brief of every module whose brief file is
-// not committed at head, and returns a note saying what was dropped; when a
-// file the spec itself is assembled from is not committed, the note (opening
-// with specNotCommitted) means none of the spec may be shown. "" when
-// everything is committed. A head git cannot list is treated as committing
-// nothing.
-func keepCommitted(ctx context.Context, repo, head string, sp *spec.Spec) string {
-	tracked := map[string]bool{}
-	if out, err := gitx.Run(ctx, repo, "ls-tree", "-r", "-z", "--name-only", head); err == nil {
-		for _, f := range strings.Split(out, "\x00") {
-			tracked[f] = true
-		}
+// keepCommitted makes sure what the reviewers are shown of sp is what is
+// committed at head, byte for byte: each file the spec is assembled from,
+// and each brief, must be a regular file at head (not a symbolic link, which
+// could lead to an untracked .env in the checkout) whose committed content is
+// the content the loader read. A brief that is not is dropped from sp; a file
+// of the spec itself that is not means none of the spec may be shown
+// (showNone). note says what was not shown and why, "" when everything was.
+// When git cannot answer, nothing is shown: the check fails closed.
+func keepCommitted(ctx context.Context, repo, head string, sp *spec.Spec) (note string, showNone bool) {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return "could not check the spec against head (" + err.Error() + "), so the reviewers were shown none of it", true
 	}
-	repoAbs, _ := filepath.Abs(repo)
-	rel := func(file string) string {
+	rel := func(file string) (string, bool) {
 		abs, err := filepath.Abs(file)
-		if err != nil {
-			return file
+		if err != nil || !spec.Inside(repoAbs, abs) {
+			return "", false
 		}
-		r, err := filepath.Rel(repoAbs, abs)
-		if err != nil {
-			return file
-		}
-		return filepath.ToSlash(r)
+		r, _ := filepath.Rel(repoAbs, abs)
+		return filepath.ToSlash(r), true
 	}
-	var missing []string
+	var specFiles []string
 	for _, f := range sp.Sources.Files() {
-		if r := rel(f); !tracked[r] {
-			missing = append(missing, r)
+		r, ok := rel(f)
+		if !ok {
+			return "spec file " + f + " is outside the repository under review, so the reviewers were shown none of the spec", true
 		}
+		specFiles = append(specFiles, r)
 	}
-	if len(missing) > 0 {
-		return fmt.Sprintf("%s (%s), so the reviewers were shown none of the spec", specNotCommitted, strings.Join(missing, ", "))
-	}
-	var dropped []string
+	briefs := map[string]string{} // owner -> repository-relative brief file
+	var paths []string
+	paths = append(paths, specFiles...)
 	for owner, b := range sp.Briefs() {
 		if b.Path == "" || b.Text == "" {
 			continue
 		}
-		if r := rel(filepath.Join(sp.Dir, filepath.FromSlash(b.Path))); !tracked[r] {
-			b.Text = ""
-			dropped = append(dropped, owner+" ("+r+")")
+		if r, ok := rel(filepath.Join(sp.Dir, filepath.FromSlash(b.Path))); ok {
+			briefs[owner] = r
+			paths = append(paths, r)
+		} else {
+			briefs[owner] = ""
 		}
 	}
+	committed, err := committedAsIs(ctx, repo, head, paths)
+	if err != nil {
+		return "could not check the spec against head (" + err.Error() + "), so the reviewers were shown none of it", true
+	}
+	var stale []string
+	for _, f := range specFiles {
+		if !committed[f] {
+			stale = append(stale, f)
+		}
+	}
+	if len(stale) > 0 {
+		return "spec files not committed at head as they are in the checkout (" + strings.Join(stale, ", ") + "), so the reviewers were shown none of the spec", true
+	}
+	var dropped []string
+	for owner, b := range sp.Briefs() {
+		r, has := briefs[owner]
+		if !has || committed[r] {
+			continue
+		}
+		b.Text = ""
+		dropped = append(dropped, owner+" ("+firstNonEmpty(r, b.Path)+")")
+	}
 	if len(dropped) == 0 {
-		return ""
+		return "", false
 	}
 	sort.Strings(dropped)
-	return "briefs not committed at head were not shown: " + strings.Join(dropped, ", ")
+	return "briefs not committed at head as they are in the checkout were not shown: " + strings.Join(dropped, ", "), false
+}
+
+// committedAsIs reports, for each repository-relative path, whether head
+// holds it as a regular file whose content is the working tree's: asked of
+// git for those paths only (ls-tree for the mode and blob, hash-object for
+// the file as it is).
+func committedAsIs(ctx context.Context, repo, head string, paths []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(paths) == 0 {
+		return out, nil
+	}
+	listing, err := gitx.Run(ctx, repo, append([]string{"ls-tree", "-z", "--full-tree", head, "--"}, paths...)...)
+	if err != nil {
+		return nil, err
+	}
+	blob := map[string]string{}
+	for _, rec := range strings.Split(listing, "\x00") {
+		meta, path, ok := strings.Cut(rec, "\t")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(meta) // mode, type, object
+		if len(f) == 3 && f[1] == "blob" && (f[0] == "100644" || f[0] == "100755") {
+			blob[path] = f[2]
+		}
+	}
+	var present []string
+	for _, p := range paths {
+		if blob[p] != "" {
+			present = append(present, p)
+		}
+	}
+	if len(present) == 0 {
+		return out, nil
+	}
+	hashes, err := gitx.Run(ctx, repo, append([]string{"hash-object", "--no-filters", "--"}, present...)...)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(hashes, "\n")
+	if len(lines) != len(present) {
+		return nil, fmt.Errorf("git hash-object gave %d hashes for %d files", len(lines), len(present))
+	}
+	for i, p := range present {
+		out[p] = strings.TrimSpace(lines[i]) == blob[p]
+	}
+	return out, nil
 }
 
 func (e *Engine) gatesPath(repo string) string {
