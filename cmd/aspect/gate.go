@@ -77,14 +77,28 @@ func runGateExtract(args []string) error {
 		return err
 	}
 	if normalize {
-		if b, err = review.NormalizeJSON(b, review.Run{Agent: *agent, Mode: *mode, Base: *base, Head: *head}); err != nil {
+		normalized, err := review.NormalizeJSON(b, review.Run{Agent: *agent, Mode: *mode, Base: *base, Head: *head})
+		if err != nil {
+			// The rejected report is not written, so show it: it is the only
+			// trace of what the model printed.
+			const shown = 4000
+			fmt.Fprintf(os.Stderr, "aspect: %s's rejected report (first %d bytes):\n%s\n", *agent, shown, clipBytes(b, shown))
 			return fmt.Errorf("gate extract: %s's report, not written to %s: %w", *agent, *out, err)
 		}
+		b = normalized
 	}
 	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(*out, b, 0o644)
+}
+
+// clipBytes is b cut to n bytes at most.
+func clipBytes(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[:n]
+	}
+	return b
 }
 
 func runGatePlan(args []string) error {

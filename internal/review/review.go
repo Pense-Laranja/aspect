@@ -483,7 +483,7 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 		fail(describe(err))
 		return
 	}
-	rep, err := Normalize(raw, a.Agent, a.Mode, plan.Base, plan.Head)
+	rep, err := Normalize(raw, Run{Agent: a.Agent, Mode: a.Mode, Base: plan.Base, Head: plan.Head})
 	if err != nil {
 		fail(err.Error())
 		return

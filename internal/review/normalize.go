@@ -259,14 +259,18 @@ func (r *Report) blockersAndWarnings() (blockers, warnings int) {
 	return blockers, warnings
 }
 
-// Normalize turns a model's report into one `aspect gate check` accepts.
+// Normalize turns a model's report into one `aspect gate check` accepts,
+// stamped with run.
 //
 // Wrong types are coerced and unknown fields dropped; nothing that changes
-// the verdict is invented. A non-info finding without a location (which
-// aspect requires) is an ErrInvalidReport: downgrading it to info could
-// turn a blocker into a pass, so the agent fails instead.
-func Normalize(raw *Object, agent, mode, base, head string) (*Report, error) {
-	r := emptyReport(agent, mode, base, head, "")
+// the verdict is invented. Two things would, so they make the report an
+// ErrInvalidReport and the agent fail instead: a severity that is none of
+// gate.Severities nor a known alias (guessing info could turn a blocker into
+// a pass), and a non-info finding without a location (which aspect
+// requires; downgrading it to info would do the same).
+func Normalize(raw *Object, run Run) (*Report, error) {
+	agent, mode := run.Agent, run.Mode
+	r := emptyReport(agent, mode, run.Base, run.Head, "")
 	ids := map[string]bool{}
 	list, _ := raw.Get("findings").([]any)
 	for idx, e := range list {
@@ -344,13 +348,30 @@ type Run struct {
 // relabelled, so gate check's stale-report rule still holds; one that leaves
 // them out, or abbreviates a commit, takes the run's.
 func NormalizeJSON(data []byte, run Run) ([]byte, error) {
+	if run.Agent == "" || run.Base == "" || run.Head == "" || !slices.Contains(gate.Modes, run.Mode) {
+		return nil, fmt.Errorf("normalize: the run needs an agent, a mode (one of %v), a base and a head, got %+v", gate.Modes, run)
+	}
 	v, err := parseValue(data)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidReport, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidReport, err)
 	}
 	raw, ok := v.(*Object)
 	if !ok {
 		return nil, fmt.Errorf("%w: the report is not a JSON object", ErrInvalidReport)
+	}
+	// Normalize skips what is not a finding object, as a model's stray text
+	// in aspect review; a report whose findings are anything else (strings,
+	// a keyed map) could hide a blocker that way, so it is refused.
+	if fs := raw.Get("findings"); fs != nil {
+		list, ok := fs.([]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: findings is not a list", ErrInvalidReport)
+		}
+		for i, e := range list {
+			if _, ok := e.(*Object); !ok {
+				return nil, fmt.Errorf("%w: findings[%d] is not an object", ErrInvalidReport, i)
+			}
+		}
 	}
 	for _, field := range []struct{ key, want string }{{"agent", run.Agent}, {"mode", run.Mode}} {
 		if got := asText(raw.Get(field.key)); got != "" && got != field.want {
@@ -358,11 +379,11 @@ func NormalizeJSON(data []byte, run Run) ([]byte, error) {
 		}
 	}
 	for _, field := range []struct{ key, want string }{{"base", run.Base}, {"head", run.Head}} {
-		if got := asText(raw.Get(field.key)); got != "" && !sameCommit(got, field.want) {
+		if got := asText(raw.Get(field.key)); got != "" && !gate.SameRev(got, field.want) {
 			return nil, fmt.Errorf("%w: the report is for %s %s, not the run's %s: it reviewed another revision", ErrInvalidReport, field.key, got, field.want)
 		}
 	}
-	r, err := Normalize(raw, run.Agent, run.Mode, run.Base, run.Head)
+	r, err := Normalize(raw, run)
 	if err != nil {
 		return nil, err
 	}
@@ -371,15 +392,6 @@ func NormalizeJSON(data []byte, run Run) ([]byte, error) {
 		return nil, err
 	}
 	return append(b, '\n'), nil
-}
-
-// sameCommit reports whether two commit names agree, one possibly an
-// abbreviation (seven characters or more) of the other.
-func sameCommit(a, b string) bool {
-	if len(a) > len(b) {
-		a, b = b, a
-	}
-	return a == b || len(a) >= 7 && strings.HasPrefix(b, a)
 }
 
 func orText(v any, fallback string) string {
