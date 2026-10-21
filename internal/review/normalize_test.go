@@ -269,7 +269,7 @@ func TestNormalizeJSON(t *testing.T) {
 		}
 		return r
 	}
-	b, err := NormalizeJSON([]byte(`{"summary": "ok", "head": "`+testHead[:7]+`", "findings": []}`), run)
+	b, err := NormalizeJSON([]byte(`{"schema": "`+gate.ReportSchema+`", "summary": "ok", "head": "`+testHead[:7]+`", "findings": [{"severity": "high", "confidence": 0.8, "title": "t", "location": {"file": "a.go", "line": 1}}]}`), run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +283,11 @@ func TestNormalizeJSON(t *testing.T) {
 		"other base":     `{"base": "0123456789abcdef", "findings": []}`,
 		"short head":     `{"head": "` + testHead[:6] + `", "findings": []}`,
 		"string finding": `{"findings": ["HIGH: SQL injection in a.go"]}`,
+		"no findings":    `{"summary": "Found a critical SQL injection in a.go:3"}`,
+		"null findings":  `{"findings": null}`,
+		"confidence 9":   `{"findings": [{"severity": "critical", "confidence": 9, "title": "t", "location": {"file": "a.go", "line": 1}}]}`,
+		"confidence 1.5": `{"findings": [{"severity": "high", "confidence": 1.5, "title": "t", "location": {"file": "a.go", "line": 1}}]}`,
+		"other schema":   `{"schema": "aspect-review/v2", "findings": []}`,
 		"findings map":   `{"findings": {"a": {"severity": "high"}}}`,
 		"other agent":    `{"agent": "red-team", "findings": []}`,
 		"other mode":     `{"mode": "advisory", "findings": []}`,

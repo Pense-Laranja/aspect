@@ -120,8 +120,8 @@ Gate flags:
           -head REF (default HEAD)  -o FILE (also write the plan, e.g. <run-dir>/plan.json)
   check, render: -override (a maintainer overrode the gate)  -public (redact security details)
   check:  -json (print the result as JSON)
-  extract: -agent A -mode M -base SHA -head SHA (the run's; normalize the report as aspect review does,
-          so an invented category maps to the nearest one instead of invalidating the report)
+  extract: -agent A -mode M -base SHA -head SHA (the run's; fix what cannot change the verdict, such
+          as an invented category, and refuse what could; a refused report is kept as FILE.rejected)
   A run directory holds plan.json and one <agent>.json report per planned agent.
 
 Review flags:

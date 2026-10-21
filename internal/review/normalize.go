@@ -341,12 +341,22 @@ type Run struct {
 	Agent, Mode, Base, Head string
 }
 
-// NormalizeJSON is Normalize for a report as JSON text, such as the one a
-// Claude Code or Gemini CLI agent prints in CI: it returns the report as
-// `aspect gate check` reads it, stamped with the run. A report that names
-// another agent, mode or revision than the run's is refused rather than
-// relabelled, so gate check's stale-report rule still holds; one that leaves
-// them out, or abbreviates a commit, takes the run's.
+// NormalizeJSON normalizes a report that an agent printed as JSON text, as
+// a Claude Code or Gemini CLI agent does in CI, and returns it as `aspect
+// gate check` reads it, stamped with the run. It is stricter than
+// Normalize, which turns a model's free answer into a report: the text it
+// reads was meant to be a report already, so it fixes only what cannot
+// change the verdict (an invented category, a known severity alias, a
+// missing id or field the run supplies) and refuses everything else that
+// gate check would have rejected:
+//   - no findings list, or findings that are not objects (a truncated or
+//     garbled report could hide a blocker behind an empty one);
+//   - a confidence above 1 (Normalize would read 9 as 9%, below the block
+//     threshold);
+//   - another schema, agent, mode or revision than the run's (relabelling
+//     would defeat gate check's stale-report rule); a report that leaves
+//     them out, or abbreviates a commit, takes the run's;
+//   - whatever Normalize refuses.
 func NormalizeJSON(data []byte, run Run) ([]byte, error) {
 	if run.Agent == "" || run.Base == "" || run.Head == "" || !slices.Contains(gate.Modes, run.Mode) {
 		return nil, fmt.Errorf("normalize: the run needs an agent, a mode (one of %v), a base and a head, got %+v", gate.Modes, run)
@@ -359,21 +369,20 @@ func NormalizeJSON(data []byte, run Run) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: the report is not a JSON object", ErrInvalidReport)
 	}
-	// Normalize skips what is not a finding object, as a model's stray text
-	// in aspect review; a report whose findings are anything else (strings,
-	// a keyed map) could hide a blocker that way, so it is refused.
-	if fs := raw.Get("findings"); fs != nil {
-		list, ok := fs.([]any)
+	list, ok := raw.Get("findings").([]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: findings is missing or not a list", ErrInvalidReport)
+	}
+	for i, e := range list {
+		f, ok := e.(*Object)
 		if !ok {
-			return nil, fmt.Errorf("%w: findings is not a list", ErrInvalidReport)
+			return nil, fmt.Errorf("%w: findings[%d] is not an object", ErrInvalidReport, i)
 		}
-		for i, e := range list {
-			if _, ok := e.(*Object); !ok {
-				return nil, fmt.Errorf("%w: findings[%d] is not an object", ErrInvalidReport, i)
-			}
+		if c, isNumber := asFloat(f.Get("confidence")); isNumber && c > 1 {
+			return nil, fmt.Errorf("%w: findings[%d] has confidence %v, outside [0, 1]", ErrInvalidReport, i, c)
 		}
 	}
-	for _, field := range []struct{ key, want string }{{"agent", run.Agent}, {"mode", run.Mode}} {
+	for _, field := range []struct{ key, want string }{{"schema", gate.ReportSchema}, {"agent", run.Agent}, {"mode", run.Mode}} {
 		if got := asText(raw.Get(field.key)); got != "" && got != field.want {
 			return nil, fmt.Errorf("%w: the report's %s is %q, not the run's %q", ErrInvalidReport, field.key, got, field.want)
 		}

@@ -118,5 +118,9 @@ func TestGateExtractTakesTheRunAndRefusesWhatItCannotTrust(t *testing.T) {
 		if _, statErr := os.Stat(out); statErr == nil {
 			t.Errorf("%s: a refused report must not be written", name)
 		}
+		if kept, readErr := os.ReadFile(out + ".rejected"); readErr != nil || !strings.Contains(string(kept), "findings") {
+			t.Errorf("%s: the refused report is kept for inspection: %v", name, readErr)
+		}
+		os.Remove(out + ".rejected")
 	}
 }

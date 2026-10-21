@@ -33,10 +33,14 @@ func runGate(sub string, args []string) error {
 // runGateExtract saves the report an agent printed as the last fenced json
 // block of its final message. Input is the --output-format json result of
 // Claude Code or Gemini CLI, or plain text. Given the run's agent, mode,
-// base and head, it first normalizes the report as `aspect review` does
-// (review.Normalize): a category the model invented (error-handling,
-// maintainability) maps to the nearest one instead of making the report
-// invalid, which blocks a gate that found nothing.
+// base and head, it saves the report through review.NormalizeJSON instead:
+// what cannot change the verdict is fixed (a category the model invented,
+// such as error-handling, maps to the nearest one rather than making the
+// report invalid and blocking a gate that found nothing), and anything
+// that could, such as an unknown severity, refuses the report. A refused
+// report is kept beside -o as <out>.rejected for whoever runs the command,
+// never printed, since CI logs of a public pull request are public and a
+// security agent's report names the weakness.
 func runGateExtract(args []string) error {
 	fs := flag.NewFlagSet("gate extract", flag.ContinueOnError)
 	out := fs.String("o", "", "where to write the report (required)")
@@ -79,11 +83,11 @@ func runGateExtract(args []string) error {
 	if normalize {
 		normalized, err := review.NormalizeJSON(b, review.Run{Agent: *agent, Mode: *mode, Base: *base, Head: *head})
 		if err != nil {
-			// The rejected report is not written, so show it: it is the only
-			// trace of what the model printed.
-			const shown = 4000
-			fmt.Fprintf(os.Stderr, "aspect: %s's rejected report (first %d bytes):\n%s\n", *agent, shown, clipBytes(b, shown))
-			return fmt.Errorf("gate extract: %s's report, not written to %s: %w", *agent, *out, err)
+			kept := ""
+			if mkErr := os.MkdirAll(filepath.Dir(*out), 0o755); mkErr == nil && os.WriteFile(*out+".rejected", b, 0o644) == nil {
+				kept = "; it is kept in " + *out + ".rejected"
+			}
+			return fmt.Errorf("gate extract: %s's report, not written to %s%s: %w", *agent, *out, kept, err)
 		}
 		b = normalized
 	}
@@ -91,14 +95,6 @@ func runGateExtract(args []string) error {
 		return err
 	}
 	return os.WriteFile(*out, b, 0o644)
-}
-
-// clipBytes is b cut to n bytes at most.
-func clipBytes(b []byte, n int) []byte {
-	if len(b) > n {
-		return b[:n]
-	}
-	return b
 }
 
 func runGatePlan(args []string) error {
