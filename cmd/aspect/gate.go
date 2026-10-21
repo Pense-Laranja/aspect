@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -97,11 +98,16 @@ func runGateExtract(args []string) error {
 // refuseReport keeps a report NormalizeJSON refused, and why, in
 // <out>.rejected, and returns an error that names neither: the reason can
 // quote the model's text (a finding's title), and this error is printed to a
-// CI log that is public on a public pull request. An error that is the
-// run's, not the report's, is returned as it is.
+// CI log that is public on a public pull request. A report an earlier
+// attempt left at out is removed, or gate check would read it in place of
+// the one refused. An error that is the run's, not the report's, is
+// returned as it is.
 func refuseReport(agent, out string, report []byte, cause error) error {
 	if !errors.Is(cause, review.ErrInvalidReport) {
 		return fmt.Errorf("gate extract: %w", cause)
+	}
+	if err := os.Remove(out); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("gate extract: %s's report was refused, and the earlier report at %s could not be removed: %w", agent, out, err)
 	}
 	rejected := out + ".rejected"
 	body := append([]byte("refused: "+cause.Error()+"\n\n"), report...)
@@ -110,7 +116,7 @@ func refuseReport(agent, out string, report []byte, cause error) error {
 		err = os.WriteFile(rejected, body, 0o644)
 	}
 	if err != nil {
-		return fmt.Errorf("gate extract: %s's report was refused and not written to %s; keeping it in %s failed too: %v", agent, out, rejected, err)
+		return fmt.Errorf("gate extract: %s's report was refused and not written to %s; keeping it in %s failed too: %w", agent, out, rejected, err)
 	}
 	return fmt.Errorf("gate extract: %s's report was refused and not written to %s; the report and the reason are in %s", agent, out, rejected)
 }

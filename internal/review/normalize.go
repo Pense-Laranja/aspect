@@ -391,9 +391,9 @@ func NormalizeJSON(data []byte, run AgentRun) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: findings[%d] is not an object", ErrInvalidReport, i)
 		}
-		if raw := f.Get("confidence"); raw != nil {
-			_, isNumber := raw.(json.Number)
-			c, ok := asFloat(raw)
+		if conf := f.Get("confidence"); conf != nil {
+			_, isNumber := conf.(json.Number)
+			c, ok := asFloat(conf)
 			if !isNumber || !ok || math.IsNaN(c) || c < 0 || c > 1 {
 				return nil, fmt.Errorf("%w: findings[%d] has a confidence that is not a number in [0, 1]", ErrInvalidReport, i)
 			}

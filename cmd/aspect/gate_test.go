@@ -91,7 +91,10 @@ func TestGateExtractTakesTheRunAndRefusesWhatItCannotTrust(t *testing.T) {
 			t.Fatal(err)
 		}
 		out := filepath.Join(dir, "r.json")
-		os.Remove(out)
+		// An earlier attempt's report: a refusal must not leave it standing.
+		if err := os.WriteFile(out, []byte(`{"stale": true}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		err := runGateExtract([]string{"-o", out, "-agent", "security-reviewer", "-mode", "gate", "-base", "aaaaaaa1", "-head", "bbbbbbb2", transcript})
 		return out, err
 	}

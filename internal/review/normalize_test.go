@@ -300,6 +300,12 @@ func TestNormalizeJSON(t *testing.T) {
 			t.Errorf("%s: want ErrInvalidReport, got %v", name, err)
 		}
 	}
+	// The bounds of [0, 1] are confidences.
+	for _, c := range []string{"0", "1", "1.0"} {
+		if _, err := NormalizeJSON([]byte(`{"findings": [{"severity": "high", "confidence": `+c+`, "title": "t", "location": {"file": "a.go", "line": 1}}]}`), run); err != nil {
+			t.Errorf("confidence %s: %v", c, err)
+		}
+	}
 	// The run abbreviated, the report's commit in full: the same commit.
 	short := AgentRun{Agent: run.Agent, Mode: run.Mode, Base: testBase[:7], Head: testHead[:7]}
 	if _, err := NormalizeJSON([]byte(`{"base": "`+testBase+`", "head": "`+testHead+`", "findings": []}`), short); err != nil {
