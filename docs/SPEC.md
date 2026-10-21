@@ -571,9 +571,23 @@ missing file fails the load, naming the owner.
 ```yaml
 modules:
   - name: translation
+    path: modules/translation
     intent: Orchestrate curriculum translation runs and their publication.
-    brief: briefs/translation.md
+    brief: ../modules/translation/ASPECT.md
 ```
+
+The file may be anywhere in the repository that holds the spec (the nearest
+directory at or above the spec's that has a `.git`; in a tree without one,
+such as a `git archive` export, the nearest with a `go.mod` or
+`Package.swift`; else the spec's own directory), so a package's own `ASPECT.md` can be its module's
+brief in place: one document that people, `aspect context` and the agents
+all read, instead of a copy beside the spec that drifts from it. Keep it
+apart from a coding assistant's instructions file (`CLAUDE.md`,
+`AGENTS.md`), which the assistant loads whatever its task: that one stays
+short and says to run `aspect context` before changing the package. A path that leads out of the repository, directly or through a symbolic
+link, or into a `.git` directory (whose config can hold a CI job's token),
+fails the load and the file is never read: a brief is sent to a model. In an included fragment the path is relative to the fragment, like
+every path there.
 
 Every agent working on the owner sees the whole text under a "brief"
 heading: the Coder and Tester build to it, the Validator judges against it.
@@ -582,6 +596,26 @@ conflict, agents are told to raise the conflict in their concerns rather
 than choose silently. `aspect import` turns Markdown documents found in a
 package directory (README.md, CLAUDE.md, design notes) into
 `briefs/<module>.md` next to the recovered spec and references them.
+`aspect briefs <spec> -w` later points every placed module whose package has
+an `ASPECT.md` at that file instead of its copy, says which copies had
+already drifted from it and which held other documents (the `CLAUDE.md`
+an import copied, say), and lists the copies no longer referenced. A brief
+someone wrote is left alone.
+
+### Reading the spec of the code at hand
+
+`aspect context <spec> <path|module>...` prints what the spec says about
+the modules owning the given files or directories (a directory stands for
+the files directly in it), or the modules named: the system's constraints,
+then each module's intent, goals, owned entities, constraints and
+invariants, then its operations and scenarios, then its brief. `-budget N`
+caps it at about N tokens, in that order of priority, and names what it left
+out. It is the same text `aspect review` shows each reviewer about the
+modules its files belong to (section 13), so a project can keep package
+rules in the spec and its `ASPECT.md` files, have them enforced by the
+review, and still put them in front of whoever edits the package: a coding
+assistant's `CLAUDE.md` can say "run `aspect context` before changing a
+package" rather than carry the rules itself.
 
 ---
 
@@ -657,7 +691,7 @@ Topology
 - A non-sqlite test engine without `dsn_env`.
 - An external interface without a `service` name; an external surface nobody consumes.
 - `system.language`, `module_path` or `stack` set alongside `tiers`; a `tier` field on a tier-local database; a single tier written under `tiers`.
-- A `brief` that was not loaded (spec parsed from memory) or is empty. A brief path that is absolute or escapes the spec's directory is an error.
+- A `brief` that was not loaded (spec parsed from memory) or is empty. A brief path that is absolute, leads out of the repository (out of the spec's directory for a spec parsed from memory) or into a `.git` directory is an error.
 - A dependency that was not loaded (spec parsed from memory).
 - `operations` listed on a surface with no `entity`; an operation that is not a lowercase verb (a function name such as `ExportCSVHandler`).
 - An `http` or `web` route that is not a path (`event:Save`, `tool:x`, `(in-process)`).
@@ -685,6 +719,23 @@ The Validator is a different agent from the Coder and Tester, sees the real
 test run, and must cite files and identifiers as evidence. Goals it forgets
 become `unverifiable`; a goal owned by several modules rolls up to its
 weakest verdict.
+
+The review agents (`aspect review`) have no tools, so the spec reaches them
+in their prompt: each is shown the system's constraints and, for the modules
+its files belong to, their intent, goals, constraints, invariants,
+operations, scenarios and brief, in that order of priority, within
+`CODE_REVIEWER_SPEC_BUDGET` tokens (`aspect context` prints the same text).
+A file belongs to a module when the module owns it as code (its `path`, or
+its directory by name), or when it is the module's brief or the fragment the
+module is written in. A rule stated in a module's constraints or invariants
+is therefore checked on every change to that module; one kept only in a
+document no module references is not. Only what is committed at the
+change's head, as it is there, reaches a prompt: a brief that is not a
+regular file at head with the content the checkout has (uncommitted, edited
+since, or a committed symbolic link, which could lead to an untracked
+`.env`) is left out, and a spec with such a file of its own is not shown at
+all. Either
+way the review's result says what the reviewers were not shown.
 
 ---
 
@@ -728,7 +779,12 @@ may include further files. Names sort, so `10_catalog.yaml` comes before
 `20_api.yaml` and dependency order inside a directory is under your
 control. `brief` and dependency `spec` paths written inside an included
 file are relative to that file and are rebased automatically. Cycles and
-missing files fail the load. `aspect expand spec.yaml` prints the
+missing files fail the load, and so does an included file outside the
+repository that holds the spec or under its `.git`, as written or through a
+symbolic link: `aspect review` sends the spec's text to a model, so a spec
+under review must not be able to name anyone's other files. (Dependency
+`spec` paths are not held to this: another system's spec may live elsewhere,
+and it is never put in a prompt.) `aspect expand spec.yaml` prints the
 assembled document, which is what the loader validates, so unknown keys
 in fragments are still caught. See
 [examples/modular_shop](https://github.com/eideroliveira/aspect/blob/main/examples/modular_shop/aspect.yaml).

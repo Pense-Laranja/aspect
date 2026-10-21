@@ -12,8 +12,9 @@ import (
 //
 //	system: sharedSystemPrompt (identical for all reviewers)
 //	user:   PR context and changed-file overview   (shared by the run)
-//	        the diff, or one part of it             (shared by reviewers
-//	                                                 with the same file scope)
+//	        what the spec says about the modules    (shared by reviewers
+//	        the reviewer's files belong to           with the same file scope)
+//	        the diff, or one part of it             (likewise)
 //	        this reviewer's context, role instructions and output format
 //
 // Everything reviewers share comes first and the instructions come last,
@@ -24,7 +25,7 @@ const sharedSystemPrompt = `You are a senior code reviewer. The user message hol
 	`followed by the role you review it in, and the exact output format.
 
 You have no tools in this session: you cannot run commands, open files, run tests or write ` +
-	`files. The diff shown is everything you can see. Where your role's instructions say to run git, ` +
+	`files. The diff, and the specification excerpt when one is shown, are everything you can see. Where your role's instructions say to run git, ` +
 	`read a file, run tests or write a report file, apply that step to the diff given instead, and ` +
 	`return the report as your answer. Cite file paths and line numbers from the new (head) side of ` +
 	`the diff. Report only issues the diff shows evidence for.`
@@ -40,6 +41,7 @@ type request struct {
 	outputFormat  string // the JSON format the answer must follow
 	diff          string
 	sharedContext string // PR title and description: the same for every reviewer
+	specContext   string // what the spec says about the modules the reviewer's files belong to
 	agentContext  string // this reviewer's assignment
 }
 
@@ -49,6 +51,9 @@ func userPrompt(req request, s *splitDiff, p diffPart) string {
 		sections = append(sections, strings.TrimSpace(req.sharedContext))
 	}
 	sections = append(sections, "### Change overview\n"+s.overview())
+	if req.specContext != "" {
+		sections = append(sections, strings.TrimSpace(req.specContext))
+	}
 	heading := "### Code diff under review"
 	if p.total > 1 {
 		heading = fmt.Sprintf("### Code diff, %s\nThe diff is too large for one prompt and is reviewed in %d parts. "+
@@ -66,7 +71,7 @@ func userPrompt(req request, s *splitDiff, p diffPart) string {
 
 // diffBudget is what the prompt budget leaves for the diff.
 func diffBudget(req request, s *splitDiff, promptBudget int) int {
-	fixed := sharedSystemPrompt + req.sharedContext + s.overview() + req.agentContext + req.instructions + req.outputFormat
+	fixed := sharedSystemPrompt + req.sharedContext + s.overview() + req.specContext + req.agentContext + req.instructions + req.outputFormat
 	return promptBudget - estimateTokens(fixed) - promptOverheadTokens
 }
 

@@ -125,3 +125,50 @@ func moduleNames(s *Spec) []string {
 	}
 	return out
 }
+
+// What a spec includes is sent to a model by aspect review, so an include
+// may not leave the repository, directly, through a dir: include or a
+// symbolic link, nor read anything under .git.
+func TestIncludesStayInsideTheRepository(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "token.yaml"), []byte("name: m\nintent: secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	for _, d := range []string{".git", "_aspect/modules"} {
+		if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "m.yaml"), []byte("name: m\nintent: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	specPath := filepath.Join(repo, "_aspect", "aspect.yaml")
+	head := "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n"
+	rel := func(target string) string {
+		r, err := filepath.Rel(filepath.Join(repo, "_aspect"), target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return filepath.ToSlash(r)
+	}
+	link := filepath.Join(repo, "_aspect", "modules", "link.yaml")
+	canLink := os.Symlink(filepath.Join(outside, "token.yaml"), link) == nil
+	for name, tc := range map[string]struct{ include, want string }{
+		"outside":     {"  - file: " + rel(filepath.Join(outside, "token.yaml")) + "\n", "must stay inside the repository"},
+		"absolute":    {"  - file: " + filepath.ToSlash(filepath.Join(outside, "token.yaml")) + "\n", "must stay inside the repository"},
+		"outside dir": {"  - dir: " + rel(outside) + "\n", "must stay inside the repository"},
+		"git":         {"  - file: ../.git/m.yaml\n", "under .git"},
+		"link":        {"  - file: modules/link.yaml\n", "through a symbolic link"},
+	} {
+		if name == "link" && !canLink {
+			continue
+		}
+		if err := os.WriteFile(specPath, []byte(head+tc.include), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(specPath); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want %q, got %v", name, tc.want, err)
+		}
+	}
+}

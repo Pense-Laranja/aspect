@@ -139,12 +139,12 @@ func TestBuildPlan(t *testing.T) {
 		{"nothing", nil, nil},
 	}
 	for _, tc := range cases {
-		p := BuildPlan(c, "b", "h", tc.changes, c.Spec)
+		p := BuildPlan(c, "b", "h", tc.changes, "", c.Spec)
 		if got := agents(p); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: agents = %v, want %v", tc.name, got, tc.want)
 		}
 	}
-	p := BuildPlan(c, "b", "h", []Change{{Path: "a.go", Added: 1}, {Path: "README.md", Added: 4, Deleted: 1}}, c.Spec)
+	p := BuildPlan(c, "b", "h", []Change{{Path: "a.go", Added: 1}, {Path: "README.md", Added: 4, Deleted: 1}}, "", c.Spec)
 	if p.ChangedFiles != 2 || p.ChangedLines != 6 {
 		t.Errorf("counts = %d files, %d lines", p.ChangedFiles, p.ChangedLines)
 	}
@@ -163,7 +163,7 @@ func TestBuildPlanWithModules(t *testing.T) {
 		{Path: "ledger/ledger.go", Added: 10, Deleted: 2},
 		{Path: "README.md", Added: 5},
 	}
-	p := BuildPlan(c, "base123", "head456", changes, specPath)
+	p := BuildPlan(c, "base123", "head456", changes, "", specPath)
 	if len(p.Modules) == 0 {
 		t.Fatal("expected modules to be populated in plan")
 	}
@@ -271,7 +271,7 @@ func plan(c *Config, files ...string) *Plan {
 	for _, f := range files {
 		ch = append(ch, Change{Path: f, Added: 1})
 	}
-	return BuildPlan(c, "aaaaaaa1", "bbbbbbb2", ch, c.Spec)
+	return BuildPlan(c, "aaaaaaa1", "bbbbbbb2", ch, "", c.Spec)
 }
 
 func TestCheck(t *testing.T) {
@@ -564,7 +564,7 @@ func TestWholeFileLocation(t *testing.T) {
 
 func TestNoSpec(t *testing.T) {
 	c := mustConfig(t)
-	p := BuildPlan(c, "aaaaaaa1", "bbbbbbb2", []Change{{Path: "README.md", Added: 1}}, NoSpec)
+	p := BuildPlan(c, "aaaaaaa1", "bbbbbbb2", []Change{{Path: "README.md", Added: 1}}, "", NoSpec)
 	if p.Spec != NoSpec {
 		t.Fatalf("spec = %q, want %q", p.Spec, NoSpec)
 	}
@@ -608,4 +608,65 @@ func mustParse(t *testing.T, src string) *Config {
 		t.Fatal(err)
 	}
 	return c
+}
+
+// A placed module owns its package's files and nothing by name; a change to
+// its brief (here the package's own ASPECT.md) or to the spec file it is
+// written in is a change to the module too. The spec is read from the
+// repository given, not from the working directory.
+func TestBuildPlanModulesFollowPathsBriefsAndSpecFiles(t *testing.T) {
+	c, err := LoadConfig(filepath.Join("..", "..", DefaultConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	files := map[string]string{
+		"_aspect/aspect.yaml": `
+aspect: 1
+system:
+  name: g
+  intent: shop
+  module_path: example.com/g
+  goals: [{id: G1, statement: x}]
+modules:
+  - dir: modules/
+`,
+		"_aspect/modules/orders.yaml": "name: modules_orders\npath: modules/orders\nintent: orders\ngoals: [G1]\nbrief: ../../modules/orders/ASPECT.md\nconstraints: [Orders are never deleted.]\ninvariants: [one live charge]\n",
+		"_aspect/modules/admin.yaml":  "name: admin\npath: admin\nintent: back office\ngoals: [G1]\ninvariants: [x]\n",
+		"modules/orders/ASPECT.md":    "rules",
+		".git/HEAD":                   "ref: refs/heads/main\n",
+	}
+	for rel, content := range files {
+		p := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan := func(paths ...string) map[string][]string {
+		var ch []Change
+		for _, p := range paths {
+			ch = append(ch, Change{Path: p, Added: 1})
+		}
+		out := map[string][]string{}
+		for _, m := range BuildPlan(c, "b", "h", ch, repo, "_aspect/aspect.yaml").Modules {
+			out[m.Name] = m.Files
+		}
+		return out
+	}
+	got := plan("modules/orders/order.go", "modules/orders/sub/x.go", "store/admin.go", "modules/orders/ASPECT.md", "_aspect/modules/admin.yaml")
+	if want := []string{"modules/orders/order.go", "modules/orders/ASPECT.md"}; !slices.Equal(got["modules_orders"], want) {
+		t.Errorf("modules_orders files = %v, want %v", got["modules_orders"], want)
+	}
+	// store/admin.go is not admin's (the old stem guess said it was); the
+	// module's spec file is.
+	if want := []string{"_aspect/modules/admin.yaml"}; !slices.Equal(got["admin"], want) {
+		t.Errorf("admin files = %v, want %v", got["admin"], want)
+	}
+	p := BuildPlan(c, "b", "h", []Change{{Path: "modules/orders/order.go", Added: 1}}, repo, "_aspect/aspect.yaml")
+	if len(p.Modules) != 1 || p.Modules[0].Brief != "modules/orders/ASPECT.md" || !slices.Equal(p.Modules[0].Constraints, []string{"Orders are never deleted."}) {
+		t.Errorf("module context = %+v", p.Modules)
+	}
 }

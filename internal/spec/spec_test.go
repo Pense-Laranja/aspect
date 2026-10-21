@@ -461,8 +461,100 @@ modules:
 		t.Fatalf("want not-loaded warnings, got:\n%s", text)
 	}
 	mem.Modules[0].Brief.Path = "../escape.md"
-	if text := join(Validate(mem)); !strings.Contains(text, "must be a relative path inside") {
+	if text := join(Validate(mem)); !strings.Contains(text, "must stay inside the spec's directory") {
 		t.Fatalf("want path escape error, got:\n%s", text)
+	}
+}
+
+// A brief may be a document anywhere in the repository (a package's own
+// ASPECT.md), so it is read in place rather than copied beside the spec, but
+// never a file outside the repository, directly or through a link.
+func TestBriefsInsideTheRepository(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.md"), []byte("not for a model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	for _, d := range []string{".git", "_aspect/modules", "pkg/order"} {
+		if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "pkg", "order", "ASPECT.md"), []byte("Orders are never deleted."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("_aspect/aspect.yaml", `
+aspect: 1
+system:
+  name: g
+  intent: shop
+  module_path: example.com/g
+  goals: [{id: G1, statement: x}]
+modules:
+  - dir: modules/
+`)
+	module := func(brief string) string {
+		return "name: order\npath: pkg/order\nintent: orders\ngoals: [G1]\nbrief: " + brief + "\nscenarios: [{id: S1, when: a, then: b}]\n"
+	}
+	// Written in an included fragment, the path is relative to the fragment.
+	write("_aspect/modules/order.yaml", module("../../pkg/order/ASPECT.md"))
+	s, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := s.Module("order")
+	if m.Brief.Path != "../pkg/order/ASPECT.md" || m.Brief.Text != "Orders are never deleted." {
+		t.Fatalf("brief = %q %q", m.Brief.Path, m.Brief.Text)
+	}
+	if issues := Validate(s); issues.HasErrors() {
+		t.Fatalf("a brief inside the repository must validate: %v", issues)
+	}
+	if want, _ := filepath.EvalSymlinks(repo); s.Root != repo && s.Root != want {
+		t.Fatalf("root = %q, want %q", s.Root, repo)
+	}
+
+	rel, err := filepath.Rel(filepath.Join(repo, "_aspect", "modules"), filepath.Join(outside, "secret.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("_aspect/modules/order.yaml", module(filepath.ToSlash(rel)))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "must stay inside the repository") {
+		t.Fatalf("a brief outside the repository must fail loading, got %v", err)
+	}
+
+	// .git is inside the repository but holds no brief, and its config can
+	// hold a CI job's token.
+	write("_aspect/modules/order.yaml", module("../../.git/config"))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "under .git") {
+		t.Fatalf("a brief under .git must fail loading, got %v", err)
+	}
+	// On a case-insensitive file system .GIT is .git.
+	write("_aspect/modules/order.yaml", module("../../.GIT/config"))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "under .git") {
+		t.Fatalf("a brief under .GIT must fail loading, got %v", err)
+	}
+
+	if err := os.Symlink(filepath.Join(outside, "secret.md"), filepath.Join(repo, "pkg", "order", "LINK.md")); err != nil {
+		t.Skip("symbolic links unavailable:", err)
+	}
+	write("_aspect/modules/order.yaml", module("../../pkg/order/LINK.md"))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "through a symbolic link") {
+		t.Fatalf("a link out of the repository must fail loading, got %v", err)
+	}
+	// Nor through a link that stays in the repository but leads into .git.
+	write(".git/config", "[http] extraheader = AUTHORIZATION: basic secret")
+	if err := os.Symlink(filepath.Join("..", "..", ".git", "config"), filepath.Join(repo, "pkg", "order", "NOTES.md")); err != nil {
+		t.Fatal(err)
+	}
+	write("_aspect/modules/order.yaml", module("../../pkg/order/NOTES.md"))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "resolves under .git") {
+		t.Fatalf("a link into .git must fail loading, got %v", err)
 	}
 }
 
@@ -682,6 +774,40 @@ modules:
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing expected validation message containing %q\ngot:\n%s", want, text)
+		}
+	}
+}
+
+// A tree with no .git (an export, a tarball) is rooted at its project
+// manifest, so a spec reading its packages' ASPECT.md loads there as it
+// does in a clone; with no manifest either, at the spec's own directory.
+func TestRepositoryRootWithoutGit(t *testing.T) {
+	tree := t.TempDir()
+	for rel, content := range map[string]string{
+		"go.mod":               "module example.com/g\n",
+		"pkg/orders/ASPECT.md": "Orders are never deleted.",
+		"_aspect/aspect.yaml":  "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: orders, path: pkg/orders, intent: a, goals: [G1], brief: ../pkg/orders/ASPECT.md, scenarios: [{id: S1, when: a, then: b}]}\n",
+	} {
+		p := filepath.Join(tree, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := Load(filepath.Join(tree, "_aspect", "aspect.yaml"))
+	if err != nil {
+		t.Fatalf("a spec in a tree with a go.mod and no .git must load: %v", err)
+	}
+	if s.Module("orders").Brief.Text != "Orders are never deleted." {
+		t.Errorf("brief = %q", s.Module("orders").Brief.Text)
+	}
+
+	bare := t.TempDir()
+	if got, err := RepositoryRoot(bare); err != nil || got != bare {
+		if resolved, _ := filepath.EvalSymlinks(bare); got != resolved {
+			t.Errorf("with neither .git nor a manifest the root is the directory itself: %q, %v", got, err)
 		}
 	}
 }

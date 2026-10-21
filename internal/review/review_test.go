@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eideroliveira/aspect/internal/llm"
+	"github.com/eideroliveira/aspect/internal/spec"
 )
 
 // The pipeline must leave no report for a gate agent that failed, record a
@@ -46,6 +47,7 @@ type fakeModel struct {
 	mu      sync.Mutex
 	answers map[string]any
 	calls   []string
+	prompts map[string]string  // the last prompt each agent was sent
 	before  func(agent string) // runs as a request starts
 }
 
@@ -53,6 +55,10 @@ func (f *fakeModel) Complete(ctx context.Context, req llm.Request) (llm.Response
 	agent := roleOf(req.Prompt)
 	f.mu.Lock()
 	f.calls = append(f.calls, agent)
+	if f.prompts == nil {
+		f.prompts = map[string]string{}
+	}
+	f.prompts[agent] = req.Prompt
 	answer := f.answers[agent]
 	before := f.before
 	f.mu.Unlock()
@@ -699,4 +705,177 @@ func TestCompareShowsAnAgentMissingFromOneRun(t *testing.T) {
 	if lines["i18n"] != "failed 0 (0 blk)" {
 		t.Errorf("an agent that failed in run A: %q", lines["i18n"])
 	}
+}
+
+// Reviewers have no tools, so the rules the spec states about the code a
+// change touches are put in their prompt: the system's constraints, the
+// module's invariants and its brief (here the package's ASPECT.md, read in
+// place). A zero budget shows none.
+func TestReviewersAreShownTheTouchedModulesSpec(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), `
+aspect: 1
+system:
+  name: g
+  intent: greet
+  module_path: example.com/g
+  constraints: [No float money.]
+  goals: [{id: G1, statement: Greets everyone.}]
+modules:
+  - name: root
+    path: .
+    intent: the package
+    goals: [G1]
+    brief: ../ASPECT.md
+    invariants: [A() never panics.]
+  - name: other
+    path: other
+    intent: untouched
+    goals: [G1]
+    invariants: [Other rule.]
+`)
+	writeFile(t, filepath.Join(repo, "ASPECT.md"), "Keep A tiny.\n")
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "spec")
+
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	te.Config.SpecBudget = 30000
+	te.run(t, Options{Head: "feature"})
+	prompt := te.model.prompts["red-team"]
+	for _, want := range []string{"### Specification of the touched modules (_aspect/aspect.yaml)", "No float money.", "[0] A() never panics.", "Keep A tiny.", "### Brief (ASPECT.md)"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, prompt)
+		}
+	}
+	i, j := strings.Index(prompt, "### Specification"), strings.Index(prompt, "### Code diff")
+	if i < 0 || i > j {
+		t.Fatal("the spec comes before the diff")
+	}
+	// (The diff itself carries the whole spec file, which this change adds.)
+	if strings.Contains(prompt[i:j], "Other rule.") {
+		t.Error("a module the change does not touch is not shown")
+	}
+
+	off := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	off.run(t, Options{Head: "feature", Force: true})
+	if p := off.model.prompts["red-team"]; strings.Contains(p, "### Specification") {
+		t.Error("a zero spec budget shows no spec")
+	}
+}
+
+// A spec that does not load (here a brief outside the repository) leaves
+// the reviewers without it, and the run records why.
+func TestASpecThatDoesNotLoadIsRecorded(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: root, path: ., intent: a, goals: [G1], brief: ../../outside.md}\n")
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "spec")
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	te.Config.SpecBudget = 30000
+	res := te.run(t, Options{Head: "feature"})
+	if p := te.model.prompts["red-team"]; strings.Contains(p, "### Specification") {
+		t.Error("a spec that does not load shows nothing")
+	}
+	if !strings.Contains(res.Plan.SpecNote, "did not load") || !strings.Contains(res.Plan.SpecNote, "must stay inside the repository") {
+		t.Errorf("the plan must say the spec did not load, got %q", res.Plan.SpecNote)
+	}
+	if !strings.Contains(res.Rendered, "Spec not fully shown") {
+		t.Errorf("the rendered result must say so:\n%s", res.Rendered)
+	}
+	b, err := os.ReadFile(filepath.Join(res.RunDir, "plan.json"))
+	if err != nil || !strings.Contains(string(b), `"spec_note"`) {
+		t.Errorf("plan.json must carry the note, got %s (%v)", b, err)
+	}
+}
+
+// Only what is committed at head reaches a prompt: a brief that is not (a
+// file a developer keeps in the checkout) is left out, and so is the whole
+// spec when one of its own files is not; the result says so.
+func TestOnlyCommittedSpecFilesReachThePrompt(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  constraints: [No float money.]\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: root, path: ., intent: a, goals: [G1], brief: ../NOTES.md, invariants: [A() never panics.]}\n")
+	gitIn(t, repo, "add", "_aspect/aspect.yaml")
+	gitIn(t, repo, "commit", "-q", "-m", "spec")
+	writeFile(t, filepath.Join(repo, "NOTES.md"), "AWS_SECRET=not-for-a-model\n")
+
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	te.Config.SpecBudget = 30000
+	res := te.run(t, Options{Head: "feature"})
+	prompt := te.model.prompts["red-team"]
+	if strings.Contains(prompt, "not-for-a-model") {
+		t.Fatal("an uncommitted brief reached the prompt")
+	}
+	if !strings.Contains(prompt, "A() never panics.") {
+		t.Error("the committed rules are still shown")
+	}
+	if !strings.Contains(res.Plan.SpecNote, "briefs not committed at head as they are in the checkout were not shown: module root (NOTES.md)") {
+		t.Errorf("note = %q", res.Plan.SpecNote)
+	}
+
+	// A fragment of the spec itself that is not committed: none of it.
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - dir: modules/\n")
+	writeFile(t, filepath.Join(repo, "_aspect/modules/root.yaml"), "name: root\npath: .\nintent: a\ngoals: [G1]\ninvariants: [Uncommitted rule.]\n")
+	gitIn(t, repo, "add", "_aspect/aspect.yaml")
+	gitIn(t, repo, "commit", "-q", "-m", "split")
+	again := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	again.Config.SpecBudget = 30000
+	res = again.run(t, Options{Head: "feature"})
+	if p := again.model.prompts["red-team"]; strings.Contains(p, "### Specification") {
+		t.Error("a spec with an uncommitted fragment is not shown at all")
+	}
+	if !strings.HasPrefix(res.Plan.SpecNote, "spec files not committed at head") || !strings.Contains(res.Plan.SpecNote, "_aspect/modules/root.yaml") {
+		t.Errorf("note = %q", res.Plan.SpecNote)
+	}
+}
+
+// A committed symbolic link is committed, but what it leads to may not be
+// (a .env in the checkout); a committed file edited in the checkout is not
+// what head holds. Neither reaches a prompt, and a head git cannot read
+// shows nothing.
+func TestKeepCommittedComparesContent(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: root, path: ., intent: a, goals: [G1], brief: rules.md}\n  - {name: other, path: other, intent: b, goals: [G1], brief: other.md}\n")
+	writeFile(t, filepath.Join(repo, ".env"), "AWS_SECRET=not-for-a-model\n")
+	writeFile(t, filepath.Join(repo, ".gitignore"), ".review/\n.env\n")
+	if err := os.Symlink("../.env", filepath.Join(repo, "_aspect", "rules.md")); err != nil {
+		t.Skip("symbolic links unavailable:", err)
+	}
+	writeFile(t, filepath.Join(repo, "_aspect/other.md"), "Committed text.\n")
+	gitIn(t, repo, "add", ".gitignore", "_aspect")
+	gitIn(t, repo, "commit", "-q", "-m", "spec")
+	writeFile(t, filepath.Join(repo, "_aspect/other.md"), "Edited, not committed.\n")
+	head := strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
+
+	sp, err := spec.Load(filepath.Join(repo, "_aspect", "aspect.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	note, none := keepCommitted(context.Background(), repo, head, sp)
+	if none {
+		t.Fatalf("the spec's own files are committed as they are: %s", note)
+	}
+	if sp.Module("root").Brief.Text != "" || sp.Module("other").Brief.Text != "" {
+		t.Errorf("briefs kept: %q / %q", sp.Module("root").Brief.Text, sp.Module("other").Brief.Text)
+	}
+	for _, want := range []string{"module root (_aspect/rules.md)", "module other (_aspect/other.md)"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note %q lacks %q", note, want)
+		}
+	}
+
+	sp, _ = spec.Load(filepath.Join(repo, "_aspect", "aspect.yaml"))
+	if note, none := keepCommitted(context.Background(), repo, "no-such-revision", sp); !none || !strings.Contains(note, "could not check the spec against head") {
+		t.Errorf("a head git cannot read must show nothing: %v %q", none, note)
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return string(out)
 }

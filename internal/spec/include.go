@@ -27,12 +27,15 @@ import (
 var pathKeys = map[string]bool{"brief": true, "spec": true}
 
 // expander carries the state of one expansion. rootDir is the root spec's
-// directory (brief paths are rebased against it); visited guards against
-// include cycles; files records the file every node was parsed from.
+// directory (brief paths are rebased against it); repoRoot is the
+// repository it belongs to (RepositoryRoot), which no include may leave;
+// visited guards against include cycles; files records the file every node
+// was parsed from.
 type expander struct {
-	rootDir string
-	visited map[string]bool
-	files   map[*yaml.Node]string
+	rootDir  string
+	repoRoot string
+	visited  map[string]bool
+	files    map[*yaml.Node]string
 }
 
 // expandIncludes rewrites node in place. dir is the directory of the file
@@ -82,6 +85,9 @@ func (e *expander) expandIncludes(node *yaml.Node, dir string) error {
 				}
 				out = append(out, splice(loaded)...)
 			case "dir":
+				if err := inRepository(e.repoRoot, filepath.Join(dir, path)); err != nil {
+					return fmt.Errorf("include dir %s: %w", path, err)
+				}
 				files, err := fragmentFiles(filepath.Join(dir, path))
 				if err != nil {
 					return err
@@ -155,6 +161,9 @@ func (e *expander) loadFragment(path, dir string) (*yaml.Node, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
+	}
+	if err := inRepository(e.repoRoot, abs); err != nil {
+		return nil, fmt.Errorf("include %s: %w", path, err)
 	}
 	if e.visited[abs] {
 		return nil, fmt.Errorf("include cycle at %s", path)
@@ -240,7 +249,11 @@ func expandFile(path string) (*yaml.Node, *Sources, error) {
 	}
 	dir := filepath.Dir(path)
 	abs, _ := filepath.Abs(path)
-	e := &expander{rootDir: dir, visited: map[string]bool{abs: true}, files: map[*yaml.Node]string{}}
+	repoRoot, err := RepositoryRoot(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	e := &expander{rootDir: dir, repoRoot: repoRoot, visited: map[string]bool{abs: true}, files: map[*yaml.Node]string{}}
 	if err := e.expandIncludes(&doc, dir); err != nil {
 		return nil, nil, err
 	}

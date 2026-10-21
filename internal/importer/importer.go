@@ -369,12 +369,12 @@ func briefs(inv *analyze.Inventory, s *spec.Spec) map[string]string {
 			continue
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "<!-- Recovered by aspect import from %s. Edit freely; this is the module's brief. -->\n\n", p.ImportPath)
+		fmt.Fprintf(&b, "%s from %s. Edit freely; this is the module's brief. -->\n\n", copyMarker, p.ImportPath)
 		for i, d := range p.Docs {
 			if i > 0 {
-				b.WriteString("\n\n---\n\n")
+				b.WriteString(docSeparator)
 			}
-			fmt.Fprintf(&b, "<!-- %s -->\n\n%s", d.Name, strings.TrimSpace(d.Content))
+			fmt.Fprintf(&b, docNameLine+"%s", d.Name, strings.TrimSpace(d.Content))
 		}
 		rel := filepath.ToSlash(filepath.Join("briefs", m.Name+".md"))
 		out[rel] = b.String()

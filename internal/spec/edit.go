@@ -3,6 +3,7 @@ package spec
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -68,6 +69,107 @@ func SetModulePaths(specPath string, paths map[string]string) ([]string, error) 
 				lines[in.line-1] += "\n"
 			}
 			lines = append(lines[:in.line], append([]string{in.text + "\n"}, lines[in.line:]...)...)
+		}
+		info, err := os.Stat(file)
+		if err != nil {
+			return changed, err
+		}
+		if err := os.WriteFile(file, []byte(strings.Join(lines, "")), info.Mode().Perm()); err != nil {
+			return changed, err
+		}
+		changed = append(changed, file)
+	}
+	sort.Strings(changed)
+	return changed, nil
+}
+
+// SetModuleBriefs points the named modules' briefs at new files: briefs maps
+// a module name to a path relative to the root spec's directory, as Brief.Path
+// is. Each value is written relative to the file the module is written in
+// (the root spec or an included fragment), as the loader expects. Like
+// SetModulePaths it edits text: an existing `brief:` keeps its line (and any
+// comment on it) with the new value; a module without one gets the key on
+// the line after its `name:`. A name not in the spec is skipped. It returns
+// the files it changed, sorted.
+func SetModuleBriefs(specPath string, briefs map[string]string) ([]string, error) {
+	root, src, err := expandFile(specPath)
+	if err != nil {
+		return nil, err
+	}
+	if root == nil {
+		return nil, fmt.Errorf("%s: empty spec", specPath)
+	}
+	rootDir := filepath.Dir(specPath)
+	type edit struct {
+		line    int  // 1-based
+		col     int  // 1-based column the `brief:` key starts at (replace)
+		replace bool // replace the value on line from col, else insert after line
+		text    string
+	}
+	edits := map[string][]edit{}
+	for _, name := range sortedKeys(briefs) {
+		item := namedEntry(root, "modules", name, true)
+		if item == nil {
+			continue
+		}
+		if item.Style&yaml.FlowStyle != 0 {
+			return nil, fmt.Errorf("module %s is written as a flow mapping ({...}); set its brief by hand", name)
+		}
+		nameKey, _ := mapEntry(item, "name")
+		file := src.files[nameKey]
+		rel, err := filepath.Rel(filepath.Dir(file), filepath.Join(rootDir, filepath.FromSlash(briefs[name])))
+		if err != nil {
+			return nil, err
+		}
+		value, err := yaml.Marshal(filepath.ToSlash(rel))
+		if err != nil {
+			return nil, err
+		}
+		v := strings.TrimSpace(string(value))
+		if k, val := mapEntry(item, "brief"); k != nil {
+			if val.Kind != yaml.ScalarNode || val.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 || val.Line != k.Line {
+				return nil, fmt.Errorf("module %s: its brief is not a one-line value; set it by hand", name)
+			}
+			if val.LineComment != "" {
+				v += " " + val.LineComment
+			}
+			// From the key, not the value: an empty `brief:` has its value
+			// right after the colon, with no space to keep.
+			edits[file] = append(edits[file], edit{line: k.Line, col: k.Column, replace: true, text: "brief: " + v})
+			continue
+		}
+		edits[file] = append(edits[file], edit{line: nameKey.Line, text: strings.Repeat(" ", nameKey.Column-1) + "brief: " + v})
+	}
+	var changed []string
+	for _, file := range sortedKeys(edits) {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return changed, err
+		}
+		lines := strings.SplitAfter(string(data), "\n")
+		ed := edits[file]
+		// Bottom-up so earlier line numbers stay valid.
+		sort.Slice(ed, func(i, j int) bool { return ed[i].line > ed[j].line })
+		for _, e := range ed {
+			if e.line < 1 || e.line > len(lines) {
+				return changed, fmt.Errorf("%s:%d: line out of range", file, e.line)
+			}
+			if e.replace {
+				l := lines[e.line-1]
+				nl := ""
+				if strings.HasSuffix(l, "\n") {
+					nl = "\n"
+				}
+				if e.col-1 > len(l) {
+					return changed, fmt.Errorf("%s:%d: column out of range", file, e.line)
+				}
+				lines[e.line-1] = l[:e.col-1] + e.text + nl
+				continue
+			}
+			if !strings.HasSuffix(lines[e.line-1], "\n") {
+				lines[e.line-1] += "\n"
+			}
+			lines = append(lines[:e.line], append([]string{e.text + "\n"}, lines[e.line:]...)...)
 		}
 		info, err := os.Stat(file)
 		if err != nil {

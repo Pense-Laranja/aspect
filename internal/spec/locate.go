@@ -2,6 +2,7 @@ package spec
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -113,4 +114,37 @@ func namedEntry(root *yaml.Node, list, name string, inTiers bool) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+// Files lists every file the spec was assembled from (the root and each
+// included fragment), sorted, as the loader opened them; nil for a spec not
+// loaded from disk.
+func (src *Sources) Files() []string {
+	if src == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range src.files {
+		if !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ModuleFile is the file module name is written in (the root spec or an
+// included fragment), as the loader opened it; "" when the spec was not
+// loaded from disk or has no such module.
+func (src *Sources) ModuleFile(name string) string {
+	if src == nil || src.root == nil {
+		return ""
+	}
+	n := namedEntry(src.root, "modules", name, true)
+	if n == nil {
+		return ""
+	}
+	return src.files[n]
 }

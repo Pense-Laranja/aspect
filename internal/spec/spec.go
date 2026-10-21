@@ -9,6 +9,7 @@ package spec
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,6 +50,12 @@ type Spec struct {
 	Dir string `yaml:"-" json:"-"`
 	// Path is the file the spec was loaded from.
 	Path string `yaml:"-" json:"-"`
+	// Root is the repository the spec belongs to (RepositoryRoot): the
+	// nearest directory at or above Dir that holds .git, else one holding a
+	// project manifest, else Dir itself. Briefs and includes may lead
+	// anywhere inside it and nowhere outside. Absolute; empty for specs
+	// parsed from memory.
+	Root string `yaml:"-" json:"-"`
 	// Deps holds the loaded specs of System.Dependencies, by name.
 	Deps map[string]*Spec `yaml:"-" json:"-"`
 	// Sources maps the loaded YAML back to the files it was written in;
@@ -66,12 +73,25 @@ type Dependency struct {
 	Intent string `yaml:"intent,omitempty" json:"intent,omitempty"`
 }
 
+// PackageBrief is the document a package keeps its spec-side rules in (the
+// domain rules, the seams, the history behind them), read in place as its
+// module's brief: by the agents, by `aspect context`, and by people. It is
+// not a coding assistant's instructions file (CLAUDE.md, AGENTS.md), which
+// an assistant loads whatever the task; a project keeps that one short and
+// points it at `aspect context`.
+const PackageBrief = "ASPECT.md"
+
 // Brief is a sidecar document: a longer, free-form description of what a
-// system, tier or module must be, kept in its own file next to the spec so
-// it can run to pages without crowding the YAML. Every agent working on the
-// owner sees the whole text.
+// system, tier or module must be, kept in its own file so it can run to
+// pages without crowding the YAML. Every agent working on the owner sees the
+// whole text. The file may be anywhere in the repository that holds the
+// spec, so a package's own ASPECT.md can be its module's brief in place,
+// read by people, `aspect context` and the agents alike, instead of a copy
+// beside the spec that drifts from it.
 type Brief struct {
-	// Path is relative to the spec file's directory.
+	// Path is relative to the spec file's directory. It may climb out of
+	// that directory (../modules/order/ASPECT.md) but not out of the
+	// repository (Spec.Root).
 	Path string `yaml:"brief,omitempty" json:"brief,omitempty"`
 	// Text is the file's content, filled by Load.
 	Text string `yaml:"-" json:"-"`
@@ -445,6 +465,9 @@ func load(path string, loading map[string]bool) (*Spec, error) {
 	s.Dir = filepath.Dir(path)
 	s.Path = path
 	s.Sources = src
+	if s.Root, err = RepositoryRoot(s.Dir); err != nil {
+		return nil, err
+	}
 	if err := s.LoadBriefs(); err != nil {
 		return nil, err
 	}
@@ -497,15 +520,22 @@ func (s *Spec) Briefs() map[string]*Brief {
 	return out
 }
 
-// LoadBriefs reads every brief file relative to Dir. Missing files are
-// reported together so the user fixes them in one pass.
+// LoadBriefs reads every brief file relative to Dir. Missing files, and
+// paths that lead out of the repository, are reported together so the user
+// fixes them in one pass; a file outside the repository is never read, since
+// a brief's text is sent to a model.
 func (s *Spec) LoadBriefs() error {
 	var missing []string
 	for owner, b := range s.Briefs() {
 		if b.Path == "" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(s.Dir, b.Path))
+		file, err := s.BriefFile(b.Path)
+		if err != nil {
+			missing = append(missing, fmt.Sprintf("%s: %v", owner, err))
+			continue
+		}
+		data, err := os.ReadFile(file)
 		if err != nil {
 			missing = append(missing, fmt.Sprintf("%s: %s (%v)", owner, b.Path, err))
 			continue
@@ -517,6 +547,153 @@ func (s *Spec) LoadBriefs() error {
 		return fmt.Errorf("brief files not found:\n  %s", strings.Join(missing, "\n  "))
 	}
 	return nil
+}
+
+// BriefFile is the file a brief path names, checked to stay inside the
+// repository: lexically, and again once symbolic links are resolved, so a
+// link committed in the repository cannot lead a brief to ~/.ssh. A file that
+// does not exist yet passes the second check (os.ReadFile then reports it).
+func (s *Spec) BriefFile(p string) (string, error) {
+	if err := s.checkBriefPath(p); err != nil {
+		return "", err
+	}
+	file := filepath.Join(s.Dir, filepath.FromSlash(p))
+	if s.Root == "" {
+		return file, nil
+	}
+	if err := inRepository(s.Root, file); err != nil {
+		return "", fmt.Errorf("%q %v", p, err)
+	}
+	return file, nil
+}
+
+// inRepository checks that file (absolute or relative to the working
+// directory) is inside the repository at root and not under its .git, as
+// written and once symbolic links are resolved. The fragments a spec
+// includes and its briefs go through it: they are sent to a model by
+// `aspect review`, so a spec under review must not be able to name the
+// reviewer's own files, nor .git/config, which can hold a CI job's token.
+// Dependency specs do not: another system's spec may live elsewhere, and
+// it is never put in a prompt. A file that does not exist yet passes the second check (the
+// read then reports it).
+func inRepository(root, file string) error {
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		return err
+	}
+	if !Inside(root, abs) {
+		return fmt.Errorf("must stay inside the repository %s", root)
+	}
+	if underGit(root, abs) {
+		return errors.New("is under .git, which holds no spec or brief and may hold credentials")
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		realRoot = root
+	}
+	if !Inside(realRoot, resolved) {
+		return fmt.Errorf("resolves outside the repository %s through a symbolic link", root)
+	}
+	if underGit(realRoot, resolved) {
+		return errors.New("resolves under .git through a symbolic link; .git holds no spec or brief and may hold credentials")
+	}
+	return nil
+}
+
+// underGit reports whether path, inside root, is in a .git directory. The
+// name is compared without regard to case: on a case-insensitive file
+// system .GIT is .git.
+func underGit(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(seg, ".git") {
+			return true
+		}
+	}
+	return false
+}
+
+// checkBriefPath is the lexical rule: relative, inside the repository
+// (inside the spec's directory for a spec parsed from memory, which has no
+// repository), and not under a .git directory, whose config can hold a CI
+// job's token.
+func (s *Spec) checkBriefPath(p string) error {
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return fmt.Errorf("%q must be a relative path", p)
+	}
+	if s.Root == "" {
+		if c := filepath.Clean(filepath.FromSlash(p)); c == ".." || strings.HasPrefix(c, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("%q must stay inside the spec's directory", p)
+		}
+		return nil
+	}
+	abs, err := filepath.Abs(filepath.Join(s.Dir, filepath.FromSlash(p)))
+	if err != nil {
+		return err
+	}
+	if !Inside(s.Root, abs) {
+		return fmt.Errorf("%q must stay inside the repository %s", p, s.Root)
+	}
+	if underGit(s.Root, abs) {
+		return fmt.Errorf("%q is under .git, which holds no brief and may hold credentials", p)
+	}
+	return nil
+}
+
+// Inside reports whether path is dir or below it; both are absolute and
+// clean.
+func Inside(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// RepositoryRoot is the nearest directory at or above dir that holds a .git
+// entry (a directory, or the file a worktree or submodule has). A tree with
+// no .git anywhere above (a git archive export, a release tarball, a build
+// context that leaves .git out) is rooted at the nearest directory holding a
+// project manifest (projectManifests) instead, so a spec that loads in a
+// clone loads in its export too; with neither, dir itself. The result is
+// absolute.
+func RepositoryRoot(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	if d, ok := nearestAbove(abs, ".git"); ok {
+		return d, nil
+	}
+	if d, ok := nearestAbove(abs, projectManifests...); ok {
+		return d, nil
+	}
+	return abs, nil
+}
+
+// projectManifests mark a project's root where there is no .git: one per
+// language profile.
+var projectManifests = []string{"go.mod", "Package.swift"}
+
+// nearestAbove is the nearest directory at or above dir holding any of
+// names.
+func nearestAbove(dir string, names ...string) (string, bool) {
+	for d := dir; ; {
+		for _, n := range names {
+			if _, err := os.Lstat(filepath.Join(d, n)); err == nil {
+				return d, true
+			}
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return "", false
+		}
+		d = parent
+	}
 }
 
 // Parse decodes YAML into a Spec and applies defaults.
@@ -670,6 +847,12 @@ func (t *Tier) LanguageStack() *LanguageStack {
 	}
 	return nil
 }
+
+// CodeDir is where the tier's code lives, relative to the repository the
+// spec describes: <tier>/ for a tier of a multi-tier spec, the root ("")
+// for the implicit tier of a single-tier spec, whose Name is empty. It is
+// the layout `aspect drift -repo` checks.
+func (t *Tier) CodeDir() string { return t.Name }
 
 // ModuleRefs returns pointers to the tier's modules, in order.
 func (t *Tier) ModuleRefs() []*Module {

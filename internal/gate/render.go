@@ -30,6 +30,9 @@ func Render(c *Config, p *Plan, r *Result, opt RenderOptions) string {
 	if p.Spec == NoSpec {
 		fmt.Fprintf(&b, "No spec: `%s` does not exist at head, so the agents reviewed against the repository's own rules and docs. The spec keeper can draft one in author mode.\n\n", inline(c.Spec))
 	}
+	if p.SpecNote != "" {
+		fmt.Fprintf(&b, "**Spec not fully shown:** %s\n\n", p.SpecNote)
+	}
 	if len(r.Agents) == 0 {
 		b.WriteString("No gate applies to this change.\n")
 		return b.String()

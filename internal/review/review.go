@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,8 @@ import (
 	"github.com/eideroliveira/aspect/internal/gate"
 	"github.com/eideroliveira/aspect/internal/gitx"
 	"github.com/eideroliveira/aspect/internal/llm"
+	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/eideroliveira/aspect/internal/speccontext"
 )
 
 // maxDescriptionChars bounds the PR description given as context: past
@@ -152,6 +155,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	specOf := e.specContexts(ctx, repo, plan) // before plan.json: it records plan.SpecNote
 	if err := writeJSON(filepath.Join(dir, "plan.json"), plan); err != nil {
 		return nil, err
 	}
@@ -191,7 +195,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.runAgent(ctx, repo, dir, plan, a, diff, shared, rv, st)
+			e.runAgent(ctx, repo, dir, plan, a, diff, shared, specOf(a), rv, st)
 		}()
 	}
 	wg.Wait()
@@ -212,6 +216,167 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	res.Outcome = st.finish(outcome, published)
 	res.Rendered, res.Published = rendered, published
 	return res, nil
+}
+
+// specContexts returns what each planned agent is shown of the spec: the
+// system's constraints and the rules of the modules its files belong to
+// (plan.Agents[i].Modules), within Config.SpecBudget. Reviewers have no
+// tools; this is how a rule written in the spec reaches them. The spec is
+// read from the working tree, as the plan's modules were, but only what is
+// committed at the change's head, as it is there, reaches a prompt (see
+// keepCommitted): a brief or an included file that is not (a .env beside
+// the code, or a committed link to one) is never sent. A spec fragment that is not
+// committed leaves the reviewers without any of the spec; a brief that is
+// not, without that brief. With no spec or a zero budget, every agent is
+// shown nothing. Whatever the reviewers were not shown, and why, goes in
+// plan.SpecNote, which the rendered result repeats: a review that never saw
+// the rules must not look like one that did.
+func (e *Engine) specContexts(ctx context.Context, repo string, plan *gate.Plan) func(gate.Planned) string {
+	none := func(gate.Planned) string { return "" }
+	if e.Config.SpecBudget <= 0 || plan.Spec == "" || plan.Spec == gate.NoSpec {
+		return none
+	}
+	sp, err := spec.Load(filepath.Join(repo, filepath.FromSlash(plan.Spec)))
+	if err != nil {
+		plan.SpecNote = fmt.Sprintf("spec %s did not load, so the reviewers were shown none of it: %v", plan.Spec, err)
+		return none
+	}
+	if note, showNone := keepCommitted(ctx, repo, plan.Head, sp); note != "" {
+		plan.SpecNote = note
+		if showNone {
+			return none
+		}
+	}
+	return func(a gate.Planned) string {
+		text := speccontext.Render(sp, a.Modules, speccontext.Options{Budget: e.Config.SpecBudget})
+		if text == "" {
+			return ""
+		}
+		return "### Specification of the touched modules (" + plan.Spec + ")\n" +
+			"What the project's spec says about the code this change touches. A change that breaks a constraint or " +
+			"invariant below is a finding: cite it in spec_ref. This is the spec as it stands in the checkout under review " +
+			"(the change's head when that is what is checked out); where the diff edits the spec itself, judge that edit " +
+			"too: a rule weakened only so that the code passes is a finding.\n\n" + text
+	}
+}
+
+// keepCommitted makes sure what the reviewers are shown of sp is what is
+// committed at head, byte for byte: each file the spec is assembled from,
+// and each brief, must be a regular file at head (not a symbolic link, which
+// could lead to an untracked .env in the checkout) whose committed content is
+// the content the loader read. A brief that is not is dropped from sp; a file
+// of the spec itself that is not means none of the spec may be shown
+// (showNone). note says what was not shown and why, "" when everything was.
+// When git cannot answer, nothing is shown: the check fails closed.
+func keepCommitted(ctx context.Context, repo, head string, sp *spec.Spec) (note string, showNone bool) {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return "could not check the spec against head (" + err.Error() + "), so the reviewers were shown none of it", true
+	}
+	rel := func(file string) (string, bool) {
+		abs, err := filepath.Abs(file)
+		if err != nil || !spec.Inside(repoAbs, abs) {
+			return "", false
+		}
+		r, _ := filepath.Rel(repoAbs, abs)
+		return filepath.ToSlash(r), true
+	}
+	var specFiles []string
+	for _, f := range sp.Sources.Files() {
+		r, ok := rel(f)
+		if !ok {
+			return "spec file " + f + " is outside the repository under review, so the reviewers were shown none of the spec", true
+		}
+		specFiles = append(specFiles, r)
+	}
+	briefs := map[string]string{} // owner -> repository-relative brief file
+	var paths []string
+	paths = append(paths, specFiles...)
+	for owner, b := range sp.Briefs() {
+		if b.Path == "" || b.Text == "" {
+			continue
+		}
+		if r, ok := rel(filepath.Join(sp.Dir, filepath.FromSlash(b.Path))); ok {
+			briefs[owner] = r
+			paths = append(paths, r)
+		} else {
+			briefs[owner] = ""
+		}
+	}
+	committed, err := committedAsIs(ctx, repo, head, paths)
+	if err != nil {
+		return "could not check the spec against head (" + err.Error() + "), so the reviewers were shown none of it", true
+	}
+	var stale []string
+	for _, f := range specFiles {
+		if !committed[f] {
+			stale = append(stale, f)
+		}
+	}
+	if len(stale) > 0 {
+		return "spec files not committed at head as they are in the checkout (" + strings.Join(stale, ", ") + "), so the reviewers were shown none of the spec", true
+	}
+	var dropped []string
+	for owner, b := range sp.Briefs() {
+		r, has := briefs[owner]
+		if !has || committed[r] {
+			continue
+		}
+		b.Text = ""
+		dropped = append(dropped, owner+" ("+firstNonEmpty(r, b.Path)+")")
+	}
+	if len(dropped) == 0 {
+		return "", false
+	}
+	sort.Strings(dropped)
+	return "briefs not committed at head as they are in the checkout were not shown: " + strings.Join(dropped, ", "), false
+}
+
+// committedAsIs reports, for each repository-relative path, whether head
+// holds it as a regular file whose content is the working tree's: asked of
+// git for those paths only (ls-tree for the mode and blob, hash-object for
+// the file as it is).
+func committedAsIs(ctx context.Context, repo, head string, paths []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(paths) == 0 {
+		return out, nil
+	}
+	listing, err := gitx.Run(ctx, repo, append([]string{"ls-tree", "-z", "--full-tree", head, "--"}, paths...)...)
+	if err != nil {
+		return nil, err
+	}
+	blob := map[string]string{}
+	for _, rec := range strings.Split(listing, "\x00") {
+		meta, path, ok := strings.Cut(rec, "\t")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(meta) // mode, type, object
+		if len(f) == 3 && f[1] == "blob" && (f[0] == "100644" || f[0] == "100755") {
+			blob[path] = f[2]
+		}
+	}
+	var present []string
+	for _, p := range paths {
+		if blob[p] != "" {
+			present = append(present, p)
+		}
+	}
+	if len(present) == 0 {
+		return out, nil
+	}
+	hashes, err := gitx.Run(ctx, repo, append([]string{"hash-object", "--no-filters", "--"}, present...)...)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(hashes, "\n")
+	if len(lines) != len(present) {
+		return nil, fmt.Errorf("git hash-object gave %d hashes for %d files", len(lines), len(present))
+	}
+	for i, p := range present {
+		out[p] = strings.TrimSpace(lines[i]) == blob[p]
+	}
+	return out, nil
 }
 
 func (e *Engine) gatesPath(repo string) string {
@@ -248,7 +413,7 @@ func (e *Engine) newRunDir(repo string) (string, string, error) {
 
 // runAgent runs one planned agent and records its report, or its failure.
 func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan, a gate.Planned,
-	diff, shared string, rv *reviewer, st *runStatus) {
+	diff, shared, specContext string, rv *reviewer, st *runStatus) {
 	out := filepath.Join(dir, a.Agent+".json")
 	fail := func(msg string) {
 		// No <agent>.json: `aspect gate check` blocks a gate whose report
@@ -305,6 +470,7 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 		outputFormat:  "Produce your report strictly conforming to the `aspect-review/v1` schema.\n" + reportFormat,
 		diff:          agentDiff,
 		sharedContext: shared,
+		specContext:   specContext,
 		agentContext:  assignment,
 	}
 	raw, u, err := rv.review(ctx, req, hooks{

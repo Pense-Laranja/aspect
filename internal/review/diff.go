@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/eideroliveira/aspect/internal/speccontext"
 )
 
 // Fitting a git diff to a model's prompt budget without losing reviewable
@@ -24,8 +26,9 @@ import (
 // for text that is not ASCII.
 
 // charsPerToken: code and diffs average 3.5-4 characters per token; 3 errs
-// toward smaller parts.
-const charsPerToken = 3.0
+// toward smaller parts. It is speccontext's, so CODE_REVIEWER_SPEC_BUDGET
+// counts tokens as the prompt budget does.
+const charsPerToken = float64(speccontext.CharsPerToken)
 
 // minifiedAvgLine: a text file whose added lines average this long is
 // minified even when its name does not say so (pdf.worker.mjs).
