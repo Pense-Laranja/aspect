@@ -59,11 +59,64 @@ func TestGateExtractNormalizesWithTheRun(t *testing.T) {
 	if err := decode(normalized); err != nil {
 		t.Fatalf("normalized, the report must validate: %v", err)
 	}
-	if b, _ := os.ReadFile(normalized); !strings.Contains(string(b), `"category": "correctness"`) {
-		t.Errorf("error-handling maps to correctness:\n%s", b)
+	b, err := os.ReadFile(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := gate.DecodeReport(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Findings[0].Category; got != "correctness" {
+		t.Errorf("error-handling maps to correctness, got %q", got)
 	}
 
 	if err := runGateExtract([]string{"-o", normalized, "-agent", "quality-reviewer", transcript}); err == nil || !strings.Contains(err.Error(), "go together") {
 		t.Errorf("a partial run must be refused, got %v", err)
+	}
+	if err := runGateExtract([]string{"-o", normalized, "-agent", "quality-reviewer", "-mode", "gates", "-base", "aaaaaaa1", "-head", "bbbbbbb2", transcript}); err == nil || !strings.Contains(err.Error(), "-mode must be one of") {
+		t.Errorf("a mistyped mode must be refused, got %v", err)
+	}
+}
+
+// The run's values stand in for those a report leaves out; a report that
+// names another revision or an unknown severity is refused, names the
+// agent, and writes nothing.
+func TestGateExtractTakesTheRunAndRefusesWhatItCannotTrust(t *testing.T) {
+	dir := t.TempDir()
+	extract := func(report string) (string, error) {
+		t.Helper()
+		transcript := filepath.Join(dir, "t.txt")
+		if err := os.WriteFile(transcript, []byte("```json\n"+report+"\n```\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(dir, "r.json")
+		os.Remove(out)
+		err := runGateExtract([]string{"-o", out, "-agent", "security-reviewer", "-mode", "gate", "-base", "aaaaaaa1", "-head", "bbbbbbb2", transcript})
+		return out, err
+	}
+	out, err := extract(`{"summary": "ok", "findings": []}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(out)
+	r, err := gate.DecodeReport(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Agent != "security-reviewer" || r.Mode != "gate" || r.Base != "aaaaaaa1" || r.Head != "bbbbbbb2" {
+		t.Errorf("the run's values are stamped: %+v", r)
+	}
+	for name, report := range map[string]string{
+		"stale":   `{"head": "ccccccc3", "findings": []}`,
+		"unknown": `{"findings": [{"severity": "weird", "title": "SQL injection", "location": {"file": "a.go", "line": 3}}]}`,
+	} {
+		out, err := extract(report)
+		if err == nil || !strings.Contains(err.Error(), "security-reviewer's report") {
+			t.Errorf("%s: want a refusal naming the agent, got %v", name, err)
+		}
+		if _, statErr := os.Stat(out); statErr == nil {
+			t.Errorf("%s: a refused report must not be written", name)
+		}
 	}
 }

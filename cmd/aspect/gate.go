@@ -50,10 +50,13 @@ func runGateExtract(args []string) error {
 	if *out == "" {
 		return fmt.Errorf("gate extract: -o is required")
 	}
-	run := []string{*agent, *mode, *base, *head}
-	normalize := slices.ContainsFunc(run, func(s string) bool { return s != "" })
-	if normalize && slices.Contains(run, "") {
+	flags := []string{*agent, *mode, *base, *head}
+	normalize := slices.ContainsFunc(flags, func(s string) bool { return s != "" })
+	if normalize && slices.Contains(flags, "") {
 		return fmt.Errorf("gate extract: -agent, -mode, -base and -head go together")
+	}
+	if normalize && !slices.Contains(gate.Modes, *mode) {
+		return fmt.Errorf("gate extract: -mode must be one of %v, got %q", gate.Modes, *mode)
 	}
 	in := os.Stdin
 	if fs.NArg() > 0 {
@@ -74,8 +77,8 @@ func runGateExtract(args []string) error {
 		return err
 	}
 	if normalize {
-		if b, err = review.NormalizeJSON(b, *agent, *mode, *base, *head); err != nil {
-			return err
+		if b, err = review.NormalizeJSON(b, review.Run{Agent: *agent, Mode: *mode, Base: *base, Head: *head}); err != nil {
+			return fmt.Errorf("gate extract: %s's report, not written to %s: %w", *agent, *out, err)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {

@@ -46,7 +46,7 @@ var messyReports = []struct{ agent, mode, raw string }{
 			 "evidence": "x", "recommendation": "y", "confidence": "high", "file": "models/b.go", "line": "7"},
 			{"severity": "low", "category": "Error Handling", "title": "Zero line",
 			 "evidence": "x", "recommendation": "y", "location": {"file": "c.go", "line": 0, "end_line": 9}},
-			{"severity": "weird", "category": null, "title": "", "evidence": null, "recommendation": null},
+			{"severity": "nit", "category": null, "title": "", "evidence": null, "recommendation": null},
 			"not a finding"
 		],
 		"handoffs": [{"to": "quality-reviewer", "reason": "self"}, {"to": "red-team", "reason": "check auth", "priority": 1}, {"reason": "no target"}],
@@ -233,6 +233,60 @@ func TestExtractJSON(t *testing.T) {
 	for _, text := range []string{"no json here", `["a list"]`, `{broken`} {
 		if _, err := extractJSON(text); err == nil {
 			t.Errorf("extractJSON(%q) accepted it", text)
+		}
+	}
+}
+
+// A severity decides the verdict: a known alias maps to the severity it
+// means, anything else makes the report invalid instead of becoming info,
+// which could turn a blocker into a pass.
+func TestSeverityAliasesAndUnknownSeverities(t *testing.T) {
+	for raw, want := range map[string]string{"Major": "high", "blocker": "high", "warning": "medium", "minor": "low", "nit": "info", "CRITICAL": "critical"} {
+		r := normalized(t, `{"findings": [{"severity": "`+raw+`", "title": "t", "location": {"file": "a.go", "line": 1}}]}`, "quality-reviewer", "gate")
+		if got := r.Findings[0].Severity; got != want {
+			t.Errorf("%s -> %s, want %s", raw, got, want)
+		}
+	}
+	for _, raw := range []string{`"weird"`, `""`, `null`} {
+		_, err := Normalize(mustObject(t, `{"findings": [{"severity": `+raw+`, "title": "SQL injection", "location": {"file": "a.go", "line": 3}}]}`),
+			"security-reviewer", "gate", testBase, testHead)
+		if !errors.Is(err, ErrInvalidReport) {
+			t.Errorf("severity %s: want ErrInvalidReport, got %v", raw, err)
+		}
+	}
+}
+
+// NormalizeJSON stamps the run on a report that leaves it out or
+// abbreviates a commit, and refuses one that names another agent, mode or
+// revision rather than relabelling it, and anything that is not a report.
+func TestNormalizeJSON(t *testing.T) {
+	run := Run{Agent: "quality-reviewer", Mode: "gate", Base: testBase, Head: testHead}
+	decode := func(b []byte) gate.Report {
+		t.Helper()
+		var r gate.Report
+		if err := json.Unmarshal(b, &r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	b, err := NormalizeJSON([]byte(`{"summary": "ok", "head": "`+testHead[:7]+`", "findings": []}`), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := decode(b); r.Agent != run.Agent || r.Mode != "gate" || r.Base != testBase || r.Head != testHead {
+		t.Errorf("stamped = %+v", r)
+	}
+	for name, raw := range map[string]string{
+		"not JSON":       `{"findings": [`,
+		"array":          `[{"findings": []}]`,
+		"other head":     `{"head": "0123456789abcdef", "findings": []}`,
+		"other agent":    `{"agent": "red-team", "findings": []}`,
+		"other mode":     `{"mode": "advisory", "findings": []}`,
+		"no location":    `{"findings": [{"severity": "high", "title": "t"}]}`,
+		"weird severity": `{"findings": [{"severity": "weird", "title": "t", "location": {"file": "a.go", "line": 1}}]}`,
+	} {
+		if _, err := NormalizeJSON([]byte(raw), run); !errors.Is(err, ErrInvalidReport) {
+			t.Errorf("%s: want ErrInvalidReport, got %v", name, err)
 		}
 	}
 }

@@ -71,6 +71,27 @@ var categoryAliases = map[string]string{
 	"perf": "performance", "vulnerability": "security", "auth": "security",
 }
 
+// severityAliases are severities models use that aspect does not, mapped to
+// the one they mean. Anything else is not guessed: a severity decides the
+// verdict, so an unknown one makes the report invalid (see Normalize).
+var severityAliases = map[string]string{
+	"blocker": "high", "major": "high", "error": "high", "severe": "critical", "fatal": "critical",
+	"warning": "medium", "warn": "medium", "moderate": "medium",
+	"minor": "low",
+	"nit":   "info", "nitpick": "info", "suggestion": "info", "note": "info", "trivial": "info", "informational": "info",
+}
+
+// severity is the aspect severity a model's value names, and whether it
+// names one.
+func severity(raw any) (string, bool) {
+	s := strings.ToLower(strings.TrimSpace(asText(raw)))
+	if slices.Contains(gate.Severities, s) {
+		return s, true
+	}
+	alias, ok := severityAliases[s]
+	return alias, ok
+}
+
 // vagueCategories name no harm: the finding takes its agent's concern.
 var vagueCategories = map[string]bool{
 	"": true, "quality": true, "code-quality": true, "general": true, "other": true, "misc": true,
@@ -261,9 +282,10 @@ func Normalize(raw *Object, agent, mode, base, head string) (*Report, error) {
 			id += "-dup"
 		}
 		ids[id] = true
-		sev := strings.ToLower(asText(f.Get("severity")))
-		if !slices.Contains(gate.Severities, sev) {
-			sev = "info"
+		sev, ok := severity(f.Get("severity"))
+		if !ok {
+			return nil, fmt.Errorf("%w: finding %q has severity %q, which is none of %v nor a known alias; guessing one could turn a blocker into a pass",
+				ErrInvalidReport, id, asText(f.Get("severity")), gate.Severities)
 		}
 		cf := finding{
 			ID:             id,
@@ -309,11 +331,19 @@ func Normalize(raw *Object, agent, mode, base, head string) (*Report, error) {
 	return r, nil
 }
 
+// Run names the review a report belongs to: the agent that wrote it, the
+// mode it ran in, and the commits it reviewed.
+type Run struct {
+	Agent, Mode, Base, Head string
+}
+
 // NormalizeJSON is Normalize for a report as JSON text, such as the one a
 // Claude Code or Gemini CLI agent prints in CI: it returns the report as
-// `aspect gate check` reads it. The agent, mode, base and head are the
-// run's, whatever the report says.
-func NormalizeJSON(data []byte, agent, mode, base, head string) ([]byte, error) {
+// `aspect gate check` reads it, stamped with the run. A report that names
+// another agent, mode or revision than the run's is refused rather than
+// relabelled, so gate check's stale-report rule still holds; one that leaves
+// them out, or abbreviates a commit, takes the run's.
+func NormalizeJSON(data []byte, run Run) ([]byte, error) {
 	v, err := parseValue(data)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidReport, err)
@@ -322,7 +352,17 @@ func NormalizeJSON(data []byte, agent, mode, base, head string) ([]byte, error) 
 	if !ok {
 		return nil, fmt.Errorf("%w: the report is not a JSON object", ErrInvalidReport)
 	}
-	r, err := Normalize(raw, agent, mode, base, head)
+	for _, field := range []struct{ key, want string }{{"agent", run.Agent}, {"mode", run.Mode}} {
+		if got := asText(raw.Get(field.key)); got != "" && got != field.want {
+			return nil, fmt.Errorf("%w: the report's %s is %q, not the run's %q", ErrInvalidReport, field.key, got, field.want)
+		}
+	}
+	for _, field := range []struct{ key, want string }{{"base", run.Base}, {"head", run.Head}} {
+		if got := asText(raw.Get(field.key)); got != "" && !sameCommit(got, field.want) {
+			return nil, fmt.Errorf("%w: the report is for %s %s, not the run's %s: it reviewed another revision", ErrInvalidReport, field.key, got, field.want)
+		}
+	}
+	r, err := Normalize(raw, run.Agent, run.Mode, run.Base, run.Head)
 	if err != nil {
 		return nil, err
 	}
@@ -331,6 +371,15 @@ func NormalizeJSON(data []byte, agent, mode, base, head string) ([]byte, error) 
 		return nil, err
 	}
 	return append(b, '\n'), nil
+}
+
+// sameCommit reports whether two commit names agree, one possibly an
+// abbreviation (seven characters or more) of the other.
+func sameCommit(a, b string) bool {
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return a == b || len(a) >= 7 && strings.HasPrefix(b, a)
 }
 
 func orText(v any, fallback string) string {
