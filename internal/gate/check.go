@@ -85,7 +85,7 @@ func Check(c *Config, p *Plan, reports map[string]Input, override bool) *Result 
 				failed(StatusInvalid, fmt.Sprintf("report is from agent %q", r.Agent))
 			case r.Mode != pl.Mode:
 				failed(StatusInvalid, fmt.Sprintf("report mode %q, planned %q", r.Mode, pl.Mode))
-			case !sameRev(r.Base, p.Base) || !sameRev(r.Head, p.Head):
+			case !SameRev(r.Base, p.Base) || !SameRev(r.Head, p.Head):
 				failed(StatusInvalid, fmt.Sprintf("report reviews %s...%s, planned %s...%s", r.Base, r.Head, p.Base, p.Head))
 			default:
 				ar.Status, ar.Summary, ar.Handoffs, ar.ADRs = StatusOK, r.Summary, append(ar.Handoffs, r.Handoffs...), r.ADRs

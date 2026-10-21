@@ -46,7 +46,7 @@ var messyReports = []struct{ agent, mode, raw string }{
 			 "evidence": "x", "recommendation": "y", "confidence": "high", "file": "models/b.go", "line": "7"},
 			{"severity": "low", "category": "Error Handling", "title": "Zero line",
 			 "evidence": "x", "recommendation": "y", "location": {"file": "c.go", "line": 0, "end_line": 9}},
-			{"severity": "weird", "category": null, "title": "", "evidence": null, "recommendation": null},
+			{"severity": "nit", "category": null, "title": "", "evidence": null, "recommendation": null},
 			"not a finding"
 		],
 		"handoffs": [{"to": "quality-reviewer", "reason": "self"}, {"to": "red-team", "reason": "check auth", "priority": 1}, {"reason": "no target"}],
@@ -66,7 +66,7 @@ var messyReports = []struct{ agent, mode, raw string }{
 
 func normalized(t *testing.T, raw, agent, mode string) *Report {
 	t.Helper()
-	r, err := Normalize(mustObject(t, raw), agent, mode, testBase, testHead)
+	r, err := Normalize(mustObject(t, raw), AgentRun{Agent: agent, Mode: mode, Base: testBase, Head: testHead})
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestFindingsAreCoercedWithoutLosingSeverity(t *testing.T) {
 
 func TestNonInfoFindingWithoutLocationFailsTheAgent(t *testing.T) {
 	_, err := Normalize(mustObject(t, `{"findings": [{"severity": "critical", "title": "SQL injection", "location": {"line": 3}}]}`),
-		"quality-reviewer", "gate", testBase, testHead)
+		AgentRun{Agent: "quality-reviewer", Mode: "gate", Base: testBase, Head: testHead})
 	if !errors.Is(err, ErrInvalidReport) {
 		t.Fatalf("err = %v", err)
 	}
@@ -234,5 +234,93 @@ func TestExtractJSON(t *testing.T) {
 		if _, err := extractJSON(text); err == nil {
 			t.Errorf("extractJSON(%q) accepted it", text)
 		}
+	}
+}
+
+// A severity decides the verdict: a known alias maps to the severity it
+// means, anything else makes the report invalid instead of becoming info,
+// which could turn a blocker into a pass.
+func TestSeverityAliasesAndUnknownSeverities(t *testing.T) {
+	for raw, want := range map[string]string{"Major": "high", "blocker": "high", "warning": "medium", "minor": "low", "nit": "info", "CRITICAL": "critical"} {
+		r := normalized(t, `{"findings": [{"severity": "`+raw+`", "title": "t", "location": {"file": "a.go", "line": 1}}]}`, "quality-reviewer", "gate")
+		if got := r.Findings[0].Severity; got != want {
+			t.Errorf("%s -> %s, want %s", raw, got, want)
+		}
+	}
+	for _, raw := range []string{`"weird"`, `""`, `null`} {
+		_, err := Normalize(mustObject(t, `{"findings": [{"severity": `+raw+`, "title": "SQL injection", "location": {"file": "a.go", "line": 3}}]}`),
+			AgentRun{Agent: "security-reviewer", Mode: "gate", Base: testBase, Head: testHead})
+		if !errors.Is(err, ErrInvalidReport) {
+			t.Errorf("severity %s: want ErrInvalidReport, got %v", raw, err)
+		}
+	}
+}
+
+// NormalizeJSON stamps the run on a report that leaves it out or
+// abbreviates a commit, and refuses one that names another agent, mode or
+// revision rather than relabelling it, and anything that is not a report.
+func TestNormalizeJSON(t *testing.T) {
+	run := AgentRun{Agent: "quality-reviewer", Mode: "gate", Base: testBase, Head: testHead}
+	decode := func(b []byte) gate.Report {
+		t.Helper()
+		var r gate.Report
+		if err := json.Unmarshal(b, &r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	b, err := NormalizeJSON([]byte(`{"schema": "`+gate.ReportSchema+`", "summary": "ok", "head": "`+testHead[:7]+`", "findings": [{"severity": "high", "confidence": 0.8, "title": "t", "location": {"file": "a.go", "line": 1}}]}`), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := decode(b); r.Agent != run.Agent || r.Mode != "gate" || r.Base != testBase || r.Head != testHead {
+		t.Errorf("stamped = %+v", r)
+	}
+	for name, raw := range map[string]string{
+		"not JSON":        `{"findings": [`,
+		"array":           `[{"findings": []}]`,
+		"other head":      `{"head": "0123456789abcdef", "findings": []}`,
+		"other base":      `{"base": "0123456789abcdef", "findings": []}`,
+		"short head":      `{"head": "` + testHead[:6] + `", "findings": []}`,
+		"string finding":  `{"findings": ["HIGH: SQL injection in a.go"]}`,
+		"no findings":     `{"summary": "Found a critical SQL injection in a.go:3"}`,
+		"null findings":   `{"findings": null}`,
+		"confidence 9":    `{"findings": [{"severity": "critical", "confidence": 9, "title": "t", "location": {"file": "a.go", "line": 1}}]}`,
+		"confidence 1.5":  `{"findings": [{"severity": "high", "confidence": 1.5, "title": "t", "location": {"file": "a.go", "line": 1}}]}`,
+		"confidence -0.9": `{"findings": [{"severity": "critical", "confidence": -0.9, "title": "t", "location": {"file": "a.go", "line": 1}}]}`,
+		"confidence 95%":  `{"findings": [{"severity": "critical", "confidence": "95%", "title": "t", "location": {"file": "a.go", "line": 1}}]}`,
+		"other schema":    `{"schema": "aspect-review/v2", "findings": []}`,
+		"findings map":    `{"findings": {"a": {"severity": "high"}}}`,
+		"other agent":     `{"agent": "red-team", "findings": []}`,
+		"other mode":      `{"mode": "advisory", "findings": []}`,
+		"no location":     `{"findings": [{"severity": "high", "title": "t"}]}`,
+		"weird severity":  `{"findings": [{"severity": "weird", "title": "t", "location": {"file": "a.go", "line": 1}}]}`,
+	} {
+		if _, err := NormalizeJSON([]byte(raw), run); !errors.Is(err, ErrInvalidReport) {
+			t.Errorf("%s: want ErrInvalidReport, got %v", name, err)
+		}
+	}
+	// The bounds of [0, 1] are confidences.
+	for _, c := range []string{"0", "1", "1.0"} {
+		if _, err := NormalizeJSON([]byte(`{"findings": [{"severity": "high", "confidence": `+c+`, "title": "t", "location": {"file": "a.go", "line": 1}}]}`), run); err != nil {
+			t.Errorf("confidence %s: %v", c, err)
+		}
+	}
+	// The run abbreviated, the report's commit in full: the same commit.
+	short := AgentRun{Agent: run.Agent, Mode: run.Mode, Base: testBase[:7], Head: testHead[:7]}
+	if _, err := NormalizeJSON([]byte(`{"base": "`+testBase+`", "head": "`+testHead+`", "findings": []}`), short); err != nil {
+		t.Errorf("an abbreviated run matches the full commit: %v", err)
+	}
+	for _, bad := range []AgentRun{{}, {Agent: "a", Mode: "gates", Base: "b", Head: "h"}, {Agent: "a", Mode: "gate", Head: "h"}} {
+		if _, err := NormalizeJSON([]byte(`{"findings": []}`), bad); err == nil || errors.Is(err, ErrInvalidReport) {
+			t.Errorf("run %+v: want a refusal of the run, got %v", bad, err)
+		}
+		if _, err := Normalize(mustObject(t, `{"findings": []}`), bad); err == nil {
+			t.Errorf("Normalize, run %+v: want a refusal of the run", bad)
+		}
+	}
+	var syntax *json.SyntaxError
+	if _, err := NormalizeJSON([]byte(`{"findings": [}`), run); !errors.As(err, &syntax) {
+		t.Errorf("the parse error stays inspectable: %v", err)
 	}
 }

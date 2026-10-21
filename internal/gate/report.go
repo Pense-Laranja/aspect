@@ -218,10 +218,10 @@ func (r *Report) Validate() error {
 	return errors.Join(errs...)
 }
 
-// sameRev reports whether two revisions name the same commit, allowing one
+// SameRev reports whether two revisions name the same commit, allowing one
 // to be an abbreviation of the other. Empty matches anything, so a plan
 // without revisions does not reject reports.
-func sameRev(a, b string) bool {
+func SameRev(a, b string) bool {
 	if a == "" || b == "" {
 		return true
 	}

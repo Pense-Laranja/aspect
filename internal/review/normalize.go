@@ -1,6 +1,7 @@
 package review
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -68,6 +69,27 @@ var categoryAliases = map[string]string{
 	"api": "contract", "interface": "contract", "compatibility": "contract",
 	"database": "data", "schema": "data", "migration": "data", "sql": "data",
 	"perf": "performance", "vulnerability": "security", "auth": "security",
+}
+
+// severityAliases are severities models use that aspect does not, mapped to
+// the one they mean. Anything else is not guessed: a severity decides the
+// verdict, so an unknown one makes the report invalid (see Normalize).
+var severityAliases = map[string]string{
+	"blocker": "high", "major": "high", "error": "high", "severe": "critical", "fatal": "critical",
+	"warning": "medium", "warn": "medium", "moderate": "medium",
+	"minor": "low",
+	"nit":   "info", "nitpick": "info", "suggestion": "info", "note": "info", "trivial": "info", "informational": "info",
+}
+
+// severity is the aspect severity a model's value names, and whether it
+// names one.
+func severity(raw any) (string, bool) {
+	s := strings.ToLower(strings.TrimSpace(asText(raw)))
+	if slices.Contains(gate.Severities, s) {
+		return s, true
+	}
+	alias, ok := severityAliases[s]
+	return alias, ok
 }
 
 // vagueCategories name no harm: the finding takes its agent's concern.
@@ -237,14 +259,21 @@ func (r *Report) blockersAndWarnings() (blockers, warnings int) {
 	return blockers, warnings
 }
 
-// Normalize turns a model's report into one `aspect gate check` accepts.
+// Normalize turns a model's report into one `aspect gate check` accepts,
+// stamped with run.
 //
 // Wrong types are coerced and unknown fields dropped; nothing that changes
-// the verdict is invented. A non-info finding without a location (which
-// aspect requires) is an ErrInvalidReport: downgrading it to info could
-// turn a blocker into a pass, so the agent fails instead.
-func Normalize(raw *Object, agent, mode, base, head string) (*Report, error) {
-	r := emptyReport(agent, mode, base, head, "")
+// the verdict is invented. Two things would, so they make the report an
+// ErrInvalidReport and the agent fail instead: a severity that is none of
+// gate.Severities nor a known alias (guessing info could turn a blocker into
+// a pass), and a non-info finding without a location (which aspect
+// requires; downgrading it to info would do the same).
+func Normalize(raw *Object, run AgentRun) (*Report, error) {
+	if err := run.check(); err != nil {
+		return nil, err
+	}
+	agent, mode := run.Agent, run.Mode
+	r := emptyReport(agent, mode, run.Base, run.Head, "")
 	ids := map[string]bool{}
 	list, _ := raw.Get("findings").([]any)
 	for idx, e := range list {
@@ -260,9 +289,10 @@ func Normalize(raw *Object, agent, mode, base, head string) (*Report, error) {
 			id += "-dup"
 		}
 		ids[id] = true
-		sev := strings.ToLower(asText(f.Get("severity")))
-		if !slices.Contains(gate.Severities, sev) {
-			sev = "info"
+		sev, ok := severity(f.Get("severity"))
+		if !ok {
+			return nil, fmt.Errorf("%w: finding %q has severity %q, which is none of %v nor a known alias; guessing one could turn a blocker into a pass",
+				ErrInvalidReport, id, asText(f.Get("severity")), gate.Severities)
 		}
 		cf := finding{
 			ID:             id,
@@ -306,6 +336,88 @@ func Normalize(raw *Object, agent, mode, base, head string) (*Report, error) {
 		r.ADRs = append(r.ADRs, adr)
 	}
 	return r, nil
+}
+
+// AgentRun names the part of a review a report belongs to: the agent that
+// wrote it, the mode it ran in, and the commits it reviewed.
+type AgentRun struct {
+	Agent, Mode, Base, Head string
+}
+
+// check reports a run no report can be stamped with: every field set, the
+// mode one of gate.Modes.
+func (run AgentRun) check() error {
+	if run.Agent == "" || run.Base == "" || run.Head == "" || !slices.Contains(gate.Modes, run.Mode) {
+		return fmt.Errorf("normalize: the run needs an agent, a mode (one of %v), a base and a head, got %+v", gate.Modes, run)
+	}
+	return nil
+}
+
+// NormalizeJSON normalizes a report that an agent printed as JSON text, as
+// a Claude Code or Gemini CLI agent does in CI, and returns it as `aspect
+// gate check` reads it, stamped with the run. It is stricter than
+// Normalize, which turns a model's free answer into a report: the text it
+// reads was meant to be a report already, so it fixes only what cannot
+// change the verdict (an invented category, a known severity alias, a
+// missing id or field the run supplies) and refuses everything else that
+// gate check would have rejected:
+//   - no findings list, or findings that are not objects (a truncated or
+//     garbled report could hide a blocker behind an empty one);
+//   - a confidence that is not a number in [0, 1] (Normalize would read 9
+//     as 9%, clamp -0.9 to 0 and guess 0.5 for "95%", each of which can drop
+//     a blocker below the block threshold);
+//   - another schema, agent, mode or revision than the run's (relabelling
+//     would defeat gate check's stale-report rule); a report that leaves
+//     them out, or abbreviates a commit, takes the run's;
+//   - whatever Normalize refuses.
+func NormalizeJSON(data []byte, run AgentRun) ([]byte, error) {
+	if err := run.check(); err != nil {
+		return nil, err
+	}
+	v, err := parseValue(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidReport, err)
+	}
+	raw, ok := v.(*Object)
+	if !ok {
+		return nil, fmt.Errorf("%w: the report is not a JSON object", ErrInvalidReport)
+	}
+	list, ok := raw.Get("findings").([]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: findings is missing or not a list", ErrInvalidReport)
+	}
+	for i, e := range list {
+		f, ok := e.(*Object)
+		if !ok {
+			return nil, fmt.Errorf("%w: findings[%d] is not an object", ErrInvalidReport, i)
+		}
+		if conf := f.Get("confidence"); conf != nil {
+			_, isNumber := conf.(json.Number)
+			c, ok := asFloat(conf)
+			if !isNumber || !ok || math.IsNaN(c) || c < 0 || c > 1 {
+				return nil, fmt.Errorf("%w: findings[%d] has a confidence that is not a number in [0, 1]", ErrInvalidReport, i)
+			}
+		}
+	}
+	for _, field := range []struct{ key, want string }{{"schema", gate.ReportSchema}, {"agent", run.Agent}, {"mode", run.Mode}} {
+		if got := asText(raw.Get(field.key)); got != "" && got != field.want {
+			return nil, fmt.Errorf("%w: the report's %s is %q, not the run's %q", ErrInvalidReport, field.key, got, field.want)
+		}
+	}
+	for _, field := range []struct{ key, want string }{{"base", run.Base}, {"head", run.Head}} {
+		if got := asText(raw.Get(field.key)); got != "" && !gate.SameRev(got, field.want) {
+			return nil, fmt.Errorf("%w: the report is for %s %s, not the run's %s: it reviewed another revision", ErrInvalidReport, field.key, got, field.want)
+		}
+	}
+	r, err := Normalize(raw, run)
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }
 
 func orText(v any, fallback string) string {

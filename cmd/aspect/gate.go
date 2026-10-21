@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/eideroliveira/aspect/internal/gate"
 	"github.com/eideroliveira/aspect/internal/gitx"
+	"github.com/eideroliveira/aspect/internal/review"
 )
 
 // runGate dispatches `aspect gate plan|check|render`.
@@ -30,15 +34,35 @@ func runGate(sub string, args []string) error {
 
 // runGateExtract saves the report an agent printed as the last fenced json
 // block of its final message. Input is the --output-format json result of
-// Claude Code or Gemini CLI, or plain text.
+// Claude Code or Gemini CLI, or plain text. Given the run's agent, mode,
+// base and head, it saves the report through review.NormalizeJSON instead:
+// what cannot change the verdict is fixed (a category the model invented,
+// such as error-handling, maps to the nearest one rather than making the
+// report invalid and blocking a gate that found nothing), and anything
+// that could, such as an unknown severity, refuses the report. A refused
+// report is kept beside -o as <out>.rejected for whoever runs the command,
+// never printed, since CI logs of a public pull request are public and a
+// security agent's report names the weakness.
 func runGateExtract(args []string) error {
 	fs := flag.NewFlagSet("gate extract", flag.ContinueOnError)
 	out := fs.String("o", "", "where to write the report (required)")
+	agent := fs.String("agent", "", "the agent that wrote the report; with -mode, -base and -head, normalize it")
+	mode := fs.String("mode", "", "the agent's mode (gate, advisory, author)")
+	base := fs.String("base", "", "the run's base commit")
+	head := fs.String("head", "", "the run's head commit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *out == "" {
 		return fmt.Errorf("gate extract: -o is required")
+	}
+	flags := []string{*agent, *mode, *base, *head}
+	normalize := slices.ContainsFunc(flags, func(s string) bool { return s != "" })
+	if normalize && slices.Contains(flags, "") {
+		return fmt.Errorf("gate extract: -agent, -mode, -base and -head go together")
+	}
+	if normalize && !slices.Contains(gate.Modes, *mode) {
+		return fmt.Errorf("gate extract: -mode must be one of %v, got %q", gate.Modes, *mode)
 	}
 	in := os.Stdin
 	if fs.NArg() > 0 {
@@ -58,10 +82,43 @@ func runGateExtract(args []string) error {
 	if err != nil {
 		return err
 	}
+	if normalize {
+		normalized, err := review.NormalizeJSON(b, review.AgentRun{Agent: *agent, Mode: *mode, Base: *base, Head: *head})
+		if err != nil {
+			return refuseReport(*agent, *out, b, err)
+		}
+		b = normalized
+	}
 	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(*out, b, 0o644)
+}
+
+// refuseReport keeps a report NormalizeJSON refused, and why, in
+// <out>.rejected, and returns an error that names neither: the reason can
+// quote the model's text (a finding's title), and this error is printed to a
+// CI log that is public on a public pull request. A report an earlier
+// attempt left at out is removed, or gate check would read it in place of
+// the one refused. An error that is the run's, not the report's, is
+// returned as it is.
+func refuseReport(agent, out string, report []byte, cause error) error {
+	if !errors.Is(cause, review.ErrInvalidReport) {
+		return fmt.Errorf("gate extract: %w", cause)
+	}
+	if err := os.Remove(out); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("gate extract: %s's report was refused, and the earlier report at %s could not be removed: %w", agent, out, err)
+	}
+	rejected := out + ".rejected"
+	body := append([]byte("refused: "+cause.Error()+"\n\n"), report...)
+	err := os.MkdirAll(filepath.Dir(out), 0o755)
+	if err == nil {
+		err = os.WriteFile(rejected, body, 0o644)
+	}
+	if err != nil {
+		return fmt.Errorf("gate extract: %s's report was refused and not written to %s; keeping it in %s failed too: %w", agent, out, rejected, err)
+	}
+	return fmt.Errorf("gate extract: %s's report was refused and not written to %s; the report and the reason are in %s", agent, out, rejected)
 }
 
 func runGatePlan(args []string) error {
