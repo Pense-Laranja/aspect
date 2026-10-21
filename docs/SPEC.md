@@ -577,8 +577,9 @@ modules:
 ```
 
 The file may be anywhere in the repository that holds the spec (the nearest
-directory at or above the spec's that has a `.git`; the spec's own directory
-when there is none), so a package's own `ASPECT.md` can be its module's
+directory at or above the spec's that has a `.git`; in a tree without one,
+such as a `git archive` export, the nearest with a `go.mod` or
+`Package.swift`; else the spec's own directory), so a package's own `ASPECT.md` can be its module's
 brief in place: one document that people, `aspect context` and the agents
 all read, instead of a copy beside the spec that drifts from it. Keep it
 apart from a coding assistant's instructions file (`CLAUDE.md`,
@@ -728,7 +729,10 @@ A file belongs to a module when the module owns it as code (its `path`, or
 its directory by name), or when it is the module's brief or the fragment the
 module is written in. A rule stated in a module's constraints or invariants
 is therefore checked on every change to that module; one kept only in a
-document no module references is not.
+document no module references is not. Only what is committed at the
+change's head reaches a prompt: a brief that is not committed is left out,
+and a spec with an uncommitted file of its own is not shown at all. Either
+way the review's result says what the reviewers were not shown.
 
 ---
 

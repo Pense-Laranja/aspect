@@ -154,7 +154,7 @@ func Run(ctx context.Context, c llm.Client, s *spec.Spec, p *plan.Plan, opts Opt
 		}
 		root, tc := pipeline.TierDir(opts.OutDir, s.System.Name, tier.Name), pipeline.Toolchain(profile, s, tier)
 		if opts.Repo != "" {
-			root, tc = filepath.Join(opts.Repo, tier.Name), pipeline.InPlaceToolchain(profile, tier)
+			root, tc = filepath.Join(opts.Repo, tier.CodeDir()), pipeline.InPlaceToolchain(profile, tier)
 		}
 		if _, err := os.Stat(root); err != nil {
 			hint := ""

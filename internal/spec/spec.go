@@ -50,8 +50,9 @@ type Spec struct {
 	Dir string `yaml:"-" json:"-"`
 	// Path is the file the spec was loaded from.
 	Path string `yaml:"-" json:"-"`
-	// Root is the repository the spec belongs to: the nearest directory at
-	// or above Dir that holds .git, else Dir itself. Brief paths may lead
+	// Root is the repository the spec belongs to (RepositoryRoot): the
+	// nearest directory at or above Dir that holds .git, else one holding a
+	// project manifest, else Dir itself. Briefs and includes may lead
 	// anywhere inside it and nowhere outside. Absolute; empty for specs
 	// parsed from memory.
 	Root string `yaml:"-" json:"-"`
@@ -71,6 +72,14 @@ type Dependency struct {
 	Spec   string `yaml:"spec" json:"spec"`
 	Intent string `yaml:"intent,omitempty" json:"intent,omitempty"`
 }
+
+// PackageBrief is the document a package keeps its spec-side rules in (the
+// domain rules, the seams, the history behind them), read in place as its
+// module's brief: by the agents, by `aspect context`, and by people. It is
+// not a coding assistant's instructions file (CLAUDE.md, AGENTS.md), which
+// an assistant loads whatever the task; a project keeps that one short and
+// points it at `aspect context`.
+const PackageBrief = "ASPECT.md"
 
 // Brief is a sidecar document: a longer, free-form description of what a
 // system, tier or module must be, kept in its own file so it can run to
@@ -560,11 +569,12 @@ func (s *Spec) BriefFile(p string) (string, error) {
 
 // inRepository checks that file (absolute or relative to the working
 // directory) is inside the repository at root and not under its .git, as
-// written and once symbolic links are resolved. Everything the loader reads
-// (the fragments a spec includes, its briefs) goes through it: what it reads
-// is sent to a model by `aspect review`, so a spec under review must not be
-// able to name the reviewer's own files, nor .git/config, which can hold a
-// CI job's token. A file that does not exist yet passes the second check (the
+// written and once symbolic links are resolved. The fragments a spec
+// includes and its briefs go through it: they are sent to a model by
+// `aspect review`, so a spec under review must not be able to name the
+// reviewer's own files, nor .git/config, which can hold a CI job's token.
+// Dependency specs do not: another system's spec may live elsewhere, and
+// it is never put in a prompt. A file that does not exist yet passes the second check (the
 // read then reports it).
 func inRepository(root, file string) error {
 	abs, err := filepath.Abs(file)
@@ -645,20 +655,42 @@ func Inside(dir, path string) bool {
 }
 
 // RepositoryRoot is the nearest directory at or above dir that holds a .git
-// entry (a directory, or the file a worktree or submodule has), else dir
-// itself, as an absolute path.
+// entry (a directory, or the file a worktree or submodule has). A tree with
+// no .git anywhere above (a git archive export, a release tarball, a build
+// context that leaves .git out) is rooted at the nearest directory holding a
+// project manifest (projectManifests) instead, so a spec that loads in a
+// clone loads in its export too; with neither, dir itself. The result is
+// absolute.
 func RepositoryRoot(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", err
 	}
-	for d := abs; ; {
-		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
-			return d, nil
+	if d, ok := nearestAbove(abs, ".git"); ok {
+		return d, nil
+	}
+	if d, ok := nearestAbove(abs, projectManifests...); ok {
+		return d, nil
+	}
+	return abs, nil
+}
+
+// projectManifests mark a project's root where there is no .git: one per
+// language profile.
+var projectManifests = []string{"go.mod", "Package.swift"}
+
+// nearestAbove is the nearest directory at or above dir holding any of
+// names.
+func nearestAbove(dir string, names ...string) (string, bool) {
+	for d := dir; ; {
+		for _, n := range names {
+			if _, err := os.Lstat(filepath.Join(d, n)); err == nil {
+				return d, true
+			}
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
-			return abs, nil
+			return "", false
 		}
 		d = parent
 	}

@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -105,9 +106,6 @@ type Result struct {
 	Outcome   string
 	Rendered  string // the Markdown result
 	Published string // what publish.sh said, when it ran
-	// SpecError says why the reviewers were shown no spec although the
-	// change has one (it did not load); "" otherwise.
-	SpecError string
 }
 
 func (e *Engine) now() time.Time {
@@ -157,6 +155,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	specOf := e.specContexts(ctx, repo, plan) // before plan.json: it records plan.SpecNote
 	if err := writeJSON(filepath.Join(dir, "plan.json"), plan); err != nil {
 		return nil, err
 	}
@@ -187,7 +186,6 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		}
 		shared = strings.TrimRight("### Pull request\nTitle: "+pr.Title+"\n\n"+body, " \n\t")
 	}
-	specOf := e.specContexts(repo, dir, plan, res)
 	rv := &reviewer{client: e.Client, engine: e.engineLabel(), model: e.Config.GeminiModel, promptBudget: e.Config.PromptBudget}
 	if e.Config.MaxConcurrency > 0 {
 		rv.slots = make(chan struct{}, e.Config.MaxConcurrency)
@@ -224,22 +222,30 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 // system's constraints and the rules of the modules its files belong to
 // (plan.Agents[i].Modules), within Config.SpecBudget. Reviewers have no
 // tools; this is how a rule written in the spec reaches them. The spec is
-// read from the working tree, as the plan's modules were. With no spec or
-// a zero budget, every agent is shown nothing. So it is with a spec that
-// does not load, and then the run says so in <run dir>/spec-context.error.txt:
-// a review that never saw the spec must not look like one that did.
-func (e *Engine) specContexts(repo, dir string, plan *gate.Plan, res *Result) func(gate.Planned) string {
+// read from the working tree, as the plan's modules were, but only what is
+// committed at the change's head reaches a prompt: a brief or an included
+// file that is not (a .env beside the code, a credentials file a developer
+// keeps in the checkout) is never sent. A spec fragment that is not
+// committed leaves the reviewers without any of the spec; a brief that is
+// not, without that brief. With no spec or a zero budget, every agent is
+// shown nothing. Whatever the reviewers were not shown, and why, goes in
+// plan.SpecNote, which the rendered result repeats: a review that never saw
+// the rules must not look like one that did.
+func (e *Engine) specContexts(ctx context.Context, repo string, plan *gate.Plan) func(gate.Planned) string {
 	none := func(gate.Planned) string { return "" }
 	if e.Config.SpecBudget <= 0 || plan.Spec == "" || plan.Spec == gate.NoSpec {
 		return none
 	}
 	sp, err := spec.Load(filepath.Join(repo, filepath.FromSlash(plan.Spec)))
 	if err != nil {
-		res.SpecError = fmt.Sprintf("spec %s did not load, so reviewers were shown none of it: %v", plan.Spec, err)
-		if werr := os.WriteFile(filepath.Join(dir, specContextError), []byte(res.SpecError+"\n"), 0o644); werr != nil {
-			res.SpecError += fmt.Sprintf(" (and %s could not be written: %v)", specContextError, werr)
-		}
+		plan.SpecNote = fmt.Sprintf("spec %s did not load, so the reviewers were shown none of it: %v", plan.Spec, err)
 		return none
+	}
+	if note := keepCommitted(ctx, repo, plan.Head, sp); note != "" {
+		plan.SpecNote = note
+		if strings.HasPrefix(note, specNotCommitted) {
+			return none
+		}
 	}
 	return func(a gate.Planned) string {
 		text := speccontext.Render(sp, a.Modules, speccontext.Options{Budget: e.Config.SpecBudget})
@@ -254,8 +260,60 @@ func (e *Engine) specContexts(repo, dir string, plan *gate.Plan, res *Result) fu
 	}
 }
 
-// specContextError names the file a run records a spec that did not load in.
-const specContextError = "spec-context.error.txt"
+// specNotCommitted opens the note for a spec whose own files are not all
+// committed at head.
+const specNotCommitted = "spec files not committed at head"
+
+// keepCommitted drops from sp the brief of every module whose brief file is
+// not committed at head, and returns a note saying what was dropped; when a
+// file the spec itself is assembled from is not committed, the note (opening
+// with specNotCommitted) means none of the spec may be shown. "" when
+// everything is committed. A head git cannot list is treated as committing
+// nothing.
+func keepCommitted(ctx context.Context, repo, head string, sp *spec.Spec) string {
+	tracked := map[string]bool{}
+	if out, err := gitx.Run(ctx, repo, "ls-tree", "-r", "-z", "--name-only", head); err == nil {
+		for _, f := range strings.Split(out, "\x00") {
+			tracked[f] = true
+		}
+	}
+	repoAbs, _ := filepath.Abs(repo)
+	rel := func(file string) string {
+		abs, err := filepath.Abs(file)
+		if err != nil {
+			return file
+		}
+		r, err := filepath.Rel(repoAbs, abs)
+		if err != nil {
+			return file
+		}
+		return filepath.ToSlash(r)
+	}
+	var missing []string
+	for _, f := range sp.Sources.Files() {
+		if r := rel(f); !tracked[r] {
+			missing = append(missing, r)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Sprintf("%s (%s), so the reviewers were shown none of the spec", specNotCommitted, strings.Join(missing, ", "))
+	}
+	var dropped []string
+	for owner, b := range sp.Briefs() {
+		if b.Path == "" || b.Text == "" {
+			continue
+		}
+		if r := rel(filepath.Join(sp.Dir, filepath.FromSlash(b.Path))); !tracked[r] {
+			b.Text = ""
+			dropped = append(dropped, owner+" ("+r+")")
+		}
+	}
+	if len(dropped) == 0 {
+		return ""
+	}
+	sort.Strings(dropped)
+	return "briefs not committed at head were not shown: " + strings.Join(dropped, ", ")
+}
 
 func (e *Engine) gatesPath(repo string) string {
 	p := filepath.Join(repo, filepath.FromSlash(gate.DefaultConfigPath))

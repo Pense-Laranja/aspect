@@ -53,6 +53,11 @@ type Plan struct {
 	ChangedLines int             `json:"changed_lines"`
 	Agents       []Planned       `json:"agents"`
 	Modules      []ModuleContext `json:"modules,omitempty"`
+	// SpecNote says why the reviewers were shown less of the spec than it
+	// holds (it did not load, or names files not committed at head); the
+	// rendered result repeats it, so a review that did not see the rules is
+	// never taken for one that did. Set by the review engine.
+	SpecNote string `json:"spec_note,omitempty"`
 }
 
 // Planned is one agent the orchestrator must run.

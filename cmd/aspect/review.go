@@ -60,8 +60,8 @@ func runReview(args []string) error {
 	if res.Cached {
 		fmt.Printf("Diff unchanged since run %s: returning its results.\n", res.RunID)
 	}
-	if res.SpecError != "" {
-		fmt.Fprintln(os.Stderr, "aspect: warning:", res.SpecError)
+	if res.Plan != nil && res.Plan.SpecNote != "" {
+		fmt.Fprintln(os.Stderr, "aspect: warning:", res.Plan.SpecNote)
 	}
 	fmt.Printf("Aspect gate outcome: %s\nRun ID: %s\n\n%s\n", res.Outcome, res.RunID, res.Rendered)
 	if res.Published != "" {

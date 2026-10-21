@@ -1,6 +1,7 @@
 package importer
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,13 +13,8 @@ import (
 // copyMarker opens every brief `aspect import` copies out of a package.
 const copyMarker = "<!-- Recovered by aspect import"
 
-// PackageBrief is the document a package keeps its spec-side rules in (the
-// domain rules, the seams, the history behind them), read in place as its
-// module's brief: by the agents, by `aspect context`, and by people. It is
-// not a coding assistant's instructions file (CLAUDE.md, AGENTS.md), which an
-// assistant loads whatever the task; a project keeps that one short and
-// points it at `aspect context`.
-const PackageBrief = "ASPECT.md"
+// PackageBrief is spec.PackageBrief, the document InPlaceBriefs reads.
+const PackageBrief = spec.PackageBrief
 
 // BriefMove proposes pointing a module's brief at its package's own
 // document instead of a copy beside the spec.
@@ -141,7 +137,7 @@ func compareCopy(copied, doc string) (dropped []string, drifted bool) {
 	if !held {
 		return dropped, false
 	}
-	want := "<!-- " + PackageBrief + " -->\n\n" + strings.TrimSpace(doc)
+	want := fmt.Sprintf(docNameLine, PackageBrief) + strings.TrimSpace(doc)
 	for from := 0; ; {
 		i := strings.Index(body[from:], want)
 		if i < 0 {

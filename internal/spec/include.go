@@ -86,7 +86,7 @@ func (e *expander) expandIncludes(node *yaml.Node, dir string) error {
 				out = append(out, splice(loaded)...)
 			case "dir":
 				if err := inRepository(e.repoRoot, filepath.Join(dir, path)); err != nil {
-					return fmt.Errorf("include dir %s: %v", path, err)
+					return fmt.Errorf("include dir %s: %w", path, err)
 				}
 				files, err := fragmentFiles(filepath.Join(dir, path))
 				if err != nil {
@@ -163,7 +163,7 @@ func (e *expander) loadFragment(path, dir string) (*yaml.Node, error) {
 		return nil, err
 	}
 	if err := inRepository(e.repoRoot, abs); err != nil {
-		return nil, fmt.Errorf("include %s: %v", path, err)
+		return nil, fmt.Errorf("include %s: %w", path, err)
 	}
 	if e.visited[abs] {
 		return nil, fmt.Errorf("include cycle at %s", path)

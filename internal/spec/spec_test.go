@@ -777,3 +777,37 @@ modules:
 		}
 	}
 }
+
+// A tree with no .git (an export, a tarball) is rooted at its project
+// manifest, so a spec reading its packages' ASPECT.md loads there as it
+// does in a clone; with no manifest either, at the spec's own directory.
+func TestRepositoryRootWithoutGit(t *testing.T) {
+	tree := t.TempDir()
+	for rel, content := range map[string]string{
+		"go.mod":               "module example.com/g\n",
+		"pkg/orders/ASPECT.md": "Orders are never deleted.",
+		"_aspect/aspect.yaml":  "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: orders, path: pkg/orders, intent: a, goals: [G1], brief: ../pkg/orders/ASPECT.md, scenarios: [{id: S1, when: a, then: b}]}\n",
+	} {
+		p := filepath.Join(tree, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := Load(filepath.Join(tree, "_aspect", "aspect.yaml"))
+	if err != nil {
+		t.Fatalf("a spec in a tree with a go.mod and no .git must load: %v", err)
+	}
+	if s.Module("orders").Brief.Text != "Orders are never deleted." {
+		t.Errorf("brief = %q", s.Module("orders").Brief.Text)
+	}
+
+	bare := t.TempDir()
+	if got, err := RepositoryRoot(bare); err != nil || got != bare {
+		if resolved, _ := filepath.EvalSymlinks(bare); got != resolved {
+			t.Errorf("with neither .git nor a manifest the root is the directory itself: %q, %v", got, err)
+		}
+	}
+}

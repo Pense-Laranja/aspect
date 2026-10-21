@@ -775,11 +775,54 @@ func TestASpecThatDoesNotLoadIsRecorded(t *testing.T) {
 	if p := te.model.prompts["red-team"]; strings.Contains(p, "### Specification") {
 		t.Error("a spec that does not load shows nothing")
 	}
-	if !strings.Contains(res.SpecError, "did not load") {
-		t.Errorf("the result must say the spec did not load, got %q", res.SpecError)
+	if !strings.Contains(res.Plan.SpecNote, "did not load") || !strings.Contains(res.Plan.SpecNote, "must stay inside the repository") {
+		t.Errorf("the plan must say the spec did not load, got %q", res.Plan.SpecNote)
 	}
-	b, err := os.ReadFile(filepath.Join(res.RunDir, specContextError))
-	if err != nil || !strings.Contains(string(b), "must stay inside the repository") {
-		t.Errorf("the run must record the load error, got %q (%v)", b, err)
+	if !strings.Contains(res.Rendered, "Spec not fully shown") {
+		t.Errorf("the rendered result must say so:\n%s", res.Rendered)
+	}
+	b, err := os.ReadFile(filepath.Join(res.RunDir, "plan.json"))
+	if err != nil || !strings.Contains(string(b), `"spec_note"`) {
+		t.Errorf("plan.json must carry the note, got %s (%v)", b, err)
+	}
+}
+
+// Only what is committed at head reaches a prompt: a brief that is not (a
+// file a developer keeps in the checkout) is left out, and so is the whole
+// spec when one of its own files is not; the result says so.
+func TestOnlyCommittedSpecFilesReachThePrompt(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  constraints: [No float money.]\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: root, path: ., intent: a, goals: [G1], brief: ../NOTES.md, invariants: [A() never panics.]}\n")
+	gitIn(t, repo, "add", "_aspect/aspect.yaml")
+	gitIn(t, repo, "commit", "-q", "-m", "spec")
+	writeFile(t, filepath.Join(repo, "NOTES.md"), "AWS_SECRET=not-for-a-model\n")
+
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	te.Config.SpecBudget = 30000
+	res := te.run(t, Options{Head: "feature"})
+	prompt := te.model.prompts["red-team"]
+	if strings.Contains(prompt, "not-for-a-model") {
+		t.Fatal("an uncommitted brief reached the prompt")
+	}
+	if !strings.Contains(prompt, "A() never panics.") {
+		t.Error("the committed rules are still shown")
+	}
+	if !strings.Contains(res.Plan.SpecNote, "briefs not committed at head were not shown: module root (NOTES.md)") {
+		t.Errorf("note = %q", res.Plan.SpecNote)
+	}
+
+	// A fragment of the spec itself that is not committed: none of it.
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - dir: modules/\n")
+	writeFile(t, filepath.Join(repo, "_aspect/modules/root.yaml"), "name: root\npath: .\nintent: a\ngoals: [G1]\ninvariants: [Uncommitted rule.]\n")
+	gitIn(t, repo, "add", "_aspect/aspect.yaml")
+	gitIn(t, repo, "commit", "-q", "-m", "split")
+	again := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	again.Config.SpecBudget = 30000
+	res = again.run(t, Options{Head: "feature"})
+	if p := again.model.prompts["red-team"]; strings.Contains(p, "### Specification") {
+		t.Error("a spec with an uncommitted fragment is not shown at all")
+	}
+	if !strings.HasPrefix(res.Plan.SpecNote, specNotCommitted) || !strings.Contains(res.Plan.SpecNote, "_aspect/modules/root.yaml") {
+		t.Errorf("note = %q", res.Plan.SpecNote)
 	}
 }
