@@ -219,3 +219,27 @@ func TestSetModuleBriefsRefusesWhatItCannotEditSafely(t *testing.T) {
 		}
 	}
 }
+
+// Several briefs in one file: each line edit lands where it belongs, whether
+// it replaces a brief or inserts one, above or below the other.
+func TestSetModuleBriefsSeveralInOneFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "aspect.yaml")
+	src := "aspect: 1\nsystem: {name: g, intent: x, module_path: example.com/g, goals: [{id: G1, statement: x}]}\nmodules:\n" +
+		"  - name: a\n    intent: a\n    brief: old-a.md\n" +
+		"  - name: b\n    intent: b\n" +
+		"  - name: c\n    intent: c\n    brief: old-c.md # keep\n"
+	if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetModuleBriefs(p, map[string]string{"a": "new-a.md", "b": "new-b.md", "c": "new-c.md"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(p)
+	want := "aspect: 1\nsystem: {name: g, intent: x, module_path: example.com/g, goals: [{id: G1, statement: x}]}\nmodules:\n" +
+		"  - name: a\n    intent: a\n    brief: new-a.md\n" +
+		"  - name: b\n    brief: new-b.md\n    intent: b\n" +
+		"  - name: c\n    intent: c\n    brief: new-c.md # keep\n"
+	if string(got) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

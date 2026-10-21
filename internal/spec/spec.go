@@ -559,10 +559,28 @@ func (s *Spec) BriefFile(p string) (string, error) {
 	if err != nil {
 		root = s.Root
 	}
-	if abs, err := filepath.Abs(resolved); err != nil || !Inside(root, abs) {
+	abs, err := filepath.Abs(resolved)
+	if err != nil || !Inside(root, abs) {
 		return "", fmt.Errorf("%q resolves outside the repository %s through a symbolic link", p, s.Root)
 	}
+	if underGit(root, abs) {
+		return "", fmt.Errorf("%q resolves under .git through a symbolic link; .git holds no brief and may hold credentials", p)
+	}
 	return file, nil
+}
+
+// underGit reports whether path, inside root, is in a .git directory.
+func underGit(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+		if seg == ".git" {
+			return true
+		}
+	}
+	return false
 }
 
 // checkBriefPath is the lexical rule: relative, inside the repository
@@ -586,12 +604,8 @@ func (s *Spec) checkBriefPath(p string) error {
 	if !Inside(s.Root, abs) {
 		return fmt.Errorf("%q must stay inside the repository %s", p, s.Root)
 	}
-	if rel, err := filepath.Rel(s.Root, abs); err == nil {
-		for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
-			if seg == ".git" {
-				return fmt.Errorf("%q is under .git, which holds no brief and may hold credentials", p)
-			}
-		}
+	if underGit(s.Root, abs) {
+		return fmt.Errorf("%q is under .git, which holds no brief and may hold credentials", p)
 	}
 	return nil
 }
@@ -775,13 +789,13 @@ func (t *Tier) LanguageStack() *LanguageStack {
 	return nil
 }
 
-// ModuleRefs returns pointers to the tier's modules, in order.
 // CodeDir is where the tier's code lives, relative to the repository the
 // spec describes: <tier>/ for a tier of a multi-tier spec, the root ("")
 // for the implicit tier of a single-tier spec, whose Name is empty. It is
 // the layout `aspect drift -repo` checks.
 func (t *Tier) CodeDir() string { return t.Name }
 
+// ModuleRefs returns pointers to the tier's modules, in order.
 func (t *Tier) ModuleRefs() []*Module {
 	out := make([]*Module, len(t.Modules))
 	for i := range t.Modules {

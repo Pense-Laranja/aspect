@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -37,5 +38,81 @@ func TestModulesFor(t *testing.T) {
 	}
 	if len(unowned) != 3 || unowned[0] != in("pkg/orders/sub") || unowned[1] != "nosuch" || !strings.Contains(unowned[2], "(outside the repository") {
 		t.Errorf("unowned = %v (want the subpackage, the unknown name and the outside directory)", unowned)
+	}
+}
+
+// captureStdout runs f and returns what it printed.
+func captureStdout(t *testing.T, f func() error) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	ferr := f()
+	w.Close()
+	os.Stdout = old
+	return <-done, ferr
+}
+
+// aspect briefs proposes without -w, writes with it (the spec still loads,
+// now reading the package's ASPECT.md), names the copy nothing references
+// any more, and has nothing left to do on a second run.
+func TestRunBriefs(t *testing.T) {
+	repo := t.TempDir()
+	for rel, content := range map[string]string{
+		".git/HEAD":                "ref: refs/heads/main\n",
+		"_aspect/aspect.yaml":      "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - dir: modules/\n",
+		"_aspect/modules/o.yaml":   "name: orders\npath: pkg/orders\nintent: a\ngoals: [G1]\nscenarios: [{id: S1, when: a, then: b}]\nbrief: ../briefs/orders.md\n",
+		"_aspect/briefs/orders.md": "<!-- Recovered by aspect import from example.com/g/pkg/orders. Edit freely; this is the module's brief. -->\n\n<!-- CLAUDE.md -->\n\nOld rules.",
+		"pkg/orders/ASPECT.md":     "Orders are never deleted.\n",
+	} {
+		p := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	specPath := filepath.Join(repo, "_aspect", "aspect.yaml")
+	fragment := filepath.Join(repo, "_aspect", "modules", "o.yaml")
+	before, _ := os.ReadFile(fragment)
+
+	out, err := captureStdout(t, func() error { return runBriefs(specPath, nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "briefs/orders.md -> ../pkg/orders/ASPECT.md") || !strings.Contains(out, "the copy also held CLAUDE.md") || !strings.Contains(out, "rerun with -w") {
+		t.Errorf("dry run:\n%s", out)
+	}
+	if after, _ := os.ReadFile(fragment); string(after) != string(before) {
+		t.Error("a dry run writes nothing")
+	}
+
+	out, err = captureStdout(t, func() error { return runBriefs(specPath, []string{"-w"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "moved 1 brief(s) in 1 file(s)") || !strings.Contains(out, "no longer referenced: "+filepath.Join(repo, "_aspect", "briefs", "orders.md")) {
+		t.Errorf("write:\n%s", out)
+	}
+	s, err := spec.Load(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Module("orders").Brief.Text; got != "Orders are never deleted.\n" {
+		t.Errorf("brief now reads %q", got)
+	}
+
+	out, err = captureStdout(t, func() error { return runBriefs(specPath, nil) })
+	if err != nil || !strings.Contains(out, "no brief to move") {
+		t.Errorf("second run: %v\n%s", err, out)
 	}
 }

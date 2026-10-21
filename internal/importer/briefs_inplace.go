@@ -38,8 +38,12 @@ type BriefMove struct {
 	Drifted bool
 }
 
-// docSeparator is what briefs() writes between two copied documents.
-const docSeparator = "\n\n---\n\n"
+// docSeparator is what briefs() writes between two copied documents, and
+// docNameLine (a format for the name) what it writes before each one.
+const (
+	docSeparator = "\n\n---\n\n"
+	docNameLine  = "<!-- %s -->\n\n"
+)
 
 // copiedDoc is the line briefs() writes before each copied document, at the
 // start of the copy's body or right after a separator. The documents it
@@ -73,8 +77,12 @@ func InPlaceBriefs(s *spec.Spec) (moves []BriefMove, notes []string) {
 			doc := filepath.Join(codeRoot, filepath.FromSlash(m.Path), PackageBrief)
 			text, err := os.ReadFile(doc)
 			if err != nil {
-				if isCopy {
-					notes = append(notes, m.Name+": "+filepath.ToSlash(filepath.Join(m.Path, PackageBrief))+" does not exist; its copied brief stays")
+				where := filepath.ToSlash(filepath.Join(m.Path, PackageBrief))
+				switch {
+				case !os.IsNotExist(err):
+					notes = append(notes, m.Name+": "+where+" could not be read ("+err.Error()+"); its brief stays")
+				case isCopy:
+					notes = append(notes, m.Name+": "+where+" does not exist; its copied brief stays")
 				}
 				continue
 			}

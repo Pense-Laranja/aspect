@@ -542,6 +542,15 @@ modules:
 	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "through a symbolic link") {
 		t.Fatalf("a link out of the repository must fail loading, got %v", err)
 	}
+	// Nor through a link that stays in the repository but leads into .git.
+	write(".git/config", "[http] extraheader = AUTHORIZATION: basic secret")
+	if err := os.Symlink(filepath.Join("..", "..", ".git", "config"), filepath.Join(repo, "pkg", "order", "NOTES.md")); err != nil {
+		t.Fatal(err)
+	}
+	write("_aspect/modules/order.yaml", module("../../pkg/order/NOTES.md"))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "resolves under .git") {
+		t.Fatalf("a link into .git must fail loading, got %v", err)
+	}
 }
 
 func TestValidateFieldTypesAndOperationVerbs(t *testing.T) {

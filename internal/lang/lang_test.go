@@ -286,3 +286,22 @@ tiers:
 		}
 	}
 }
+
+// Placed and unplaced modules claiming the same directory: the placed one
+// owns it, for files and for the directory alike.
+func TestOwnerPrefersThePlacedModuleOnATie(t *testing.T) {
+	p, err := For("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := &spec.Module{Name: "pkg"}
+	placed := &spec.Module{Name: "other", Path: "pkg"}
+	for _, mods := range [][]*spec.Module{{byName, placed}, {placed, byName}} {
+		if m := p.Owner(mods, "pkg/x.go"); m != placed {
+			t.Errorf("Owner = %v", m)
+		}
+		if m := p.OwnerOfDir(mods, "pkg"); m != placed {
+			t.Errorf("OwnerOfDir = %v", m)
+		}
+	}
+}

@@ -20,14 +20,15 @@ import (
 	"github.com/eideroliveira/aspect/internal/spec"
 )
 
-// CharsPerToken is the estimate the budget is counted in. It is the review
-// engine's (internal/review's charsPerToken), which errs toward fewer
-// tokens per character, so a budget in tokens means the same in both.
+// CharsPerToken is the estimate the budget is counted in, and the review
+// engine's (internal/review's charsPerToken is defined from it): code and
+// diffs average 3.5-4 characters per token, and 3 errs toward fitting.
 const CharsPerToken = 3
 
 const (
-	// omittedNoteReserve is kept for the closing "Left out ..." note.
-	omittedNoteReserve = 200
+	// omittedNoteReserve is kept for the closing "Left out ..." note, which
+	// is shortened to fit it.
+	omittedNoteReserve = 240
 	// cutMarkerReserve is room for the "[cut to fit the size limit]" line.
 	cutMarkerReserve = 60
 	// minCutRoom: below this much room a part is left out rather than cut,
@@ -127,7 +128,7 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 		}
 	}
 	if len(omitted) > 0 {
-		fmt.Fprintf(&b, "Left out to fit the size limit: %s. Do not report something as unspecified only because it is not shown here.\n", strings.Join(omitted, "; "))
+		b.WriteString(omittedNote(omitted))
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
@@ -147,9 +148,9 @@ func fit(parts []part, budget int) (kept []part, omitted []string) {
 		switch {
 		case p.kind != kindCore && p.kind != kindSystem && dropped[p.module]:
 			omitted = append(omitted, p.label)
-		case len(p.text) <= room:
+		case len(p.text)+1 <= room: // and the blank line after it
 			kept = append(kept, p)
-			room -= len(p.text)
+			room -= len(p.text) + 1
 		case p.truncatable && room > minCutRoom:
 			cut := p.text[:runeStart(p.text, room-cutMarkerReserve)]
 			p.text = cut + "\n[cut to fit the size limit]\n"
@@ -164,6 +165,28 @@ func fit(parts []part, budget int) (kept []part, omitted []string) {
 		}
 	}
 	return kept, omitted
+}
+
+// omittedNote names what was left out, within omittedNoteReserve: the
+// names that fit, then how many more.
+func omittedNote(omitted []string) string {
+	const head, tail = "Left out to fit the size limit: ", ". Do not report something as unspecified only because it is not shown here.\n"
+	names := strings.Join(omitted, "; ")
+	if len(head)+len(names)+len(tail) > omittedNoteReserve {
+		names = ""
+		for i, o := range omitted {
+			more := fmt.Sprintf("; and %d more", len(omitted)-i)
+			if i > 0 && len(head)+len(names)+2+len(o)+len(more)+len(tail) > omittedNoteReserve {
+				names += more
+				break
+			}
+			if i > 0 {
+				names += "; "
+			}
+			names += o
+		}
+	}
+	return head + names + tail
 }
 
 // runeStart backs n off to the start of a UTF-8 sequence in s.

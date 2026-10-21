@@ -775,6 +775,9 @@ func TestASpecThatDoesNotLoadIsRecorded(t *testing.T) {
 	if p := te.model.prompts["red-team"]; strings.Contains(p, "### Specification") {
 		t.Error("a spec that does not load shows nothing")
 	}
+	if !strings.Contains(res.SpecError, "did not load") {
+		t.Errorf("the result must say the spec did not load, got %q", res.SpecError)
+	}
 	b, err := os.ReadFile(filepath.Join(res.RunDir, specContextError))
 	if err != nil || !strings.Contains(string(b), "must stay inside the repository") {
 		t.Errorf("the run must record the load error, got %q (%v)", b, err)

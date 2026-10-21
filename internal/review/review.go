@@ -105,6 +105,9 @@ type Result struct {
 	Outcome   string
 	Rendered  string // the Markdown result
 	Published string // what publish.sh said, when it ran
+	// SpecError says why the reviewers were shown no spec although the
+	// change has one (it did not load); "" otherwise.
+	SpecError string
 }
 
 func (e *Engine) now() time.Time {
@@ -184,7 +187,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		}
 		shared = strings.TrimRight("### Pull request\nTitle: "+pr.Title+"\n\n"+body, " \n\t")
 	}
-	specOf := e.specContexts(repo, dir, plan)
+	specOf := e.specContexts(repo, dir, plan, res)
 	rv := &reviewer{client: e.Client, engine: e.engineLabel(), model: e.Config.GeminiModel, promptBudget: e.Config.PromptBudget}
 	if e.Config.MaxConcurrency > 0 {
 		rv.slots = make(chan struct{}, e.Config.MaxConcurrency)
@@ -225,15 +228,17 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 // a zero budget, every agent is shown nothing. So it is with a spec that
 // does not load, and then the run says so in <run dir>/spec-context.error.txt:
 // a review that never saw the spec must not look like one that did.
-func (e *Engine) specContexts(repo, dir string, plan *gate.Plan) func(gate.Planned) string {
+func (e *Engine) specContexts(repo, dir string, plan *gate.Plan, res *Result) func(gate.Planned) string {
 	none := func(gate.Planned) string { return "" }
 	if e.Config.SpecBudget <= 0 || plan.Spec == "" || plan.Spec == gate.NoSpec {
 		return none
 	}
 	sp, err := spec.Load(filepath.Join(repo, filepath.FromSlash(plan.Spec)))
 	if err != nil {
-		msg := fmt.Sprintf("spec %s did not load, so reviewers were shown none of it: %v\n", plan.Spec, err)
-		_ = os.WriteFile(filepath.Join(dir, specContextError), []byte(msg), 0o644)
+		res.SpecError = fmt.Sprintf("spec %s did not load, so reviewers were shown none of it: %v", plan.Spec, err)
+		if werr := os.WriteFile(filepath.Join(dir, specContextError), []byte(res.SpecError+"\n"), 0o644); werr != nil {
+			res.SpecError += fmt.Sprintf(" (and %s could not be written: %v)", specContextError, werr)
+		}
 		return none
 	}
 	return func(a gate.Planned) string {
@@ -243,8 +248,9 @@ func (e *Engine) specContexts(repo, dir string, plan *gate.Plan) func(gate.Plann
 		}
 		return "### Specification of the touched modules (" + plan.Spec + ")\n" +
 			"What the project's spec says about the code this change touches. A change that breaks a constraint or " +
-			"invariant below is a finding: cite it in spec_ref. This is the spec as the change leaves it; where the " +
-			"diff edits the spec itself, judge that edit too: a rule weakened only so that the code passes is a finding.\n\n" + text
+			"invariant below is a finding: cite it in spec_ref. This is the spec as it stands in the checkout under review " +
+			"(the change's head when that is what is checked out); where the diff edits the spec itself, judge that edit " +
+			"too: a rule weakened only so that the code passes is a finding.\n\n" + text
 	}
 }
 

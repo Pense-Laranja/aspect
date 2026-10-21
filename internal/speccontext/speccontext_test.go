@@ -1,8 +1,10 @@
 package speccontext
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/eideroliveira/aspect/internal/spec"
 )
@@ -126,5 +128,30 @@ func TestRenderDropsAllOfAModuleWhoseRulesDoNotFit(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("the note must name %q:\n%s", want, out)
 		}
+	}
+}
+
+// A cut never splits a UTF-8 character, and the note on what was left out
+// stays within its reserve however much was.
+func TestRenderCutsAtCharactersAndShortensTheNote(t *testing.T) {
+	s := load(t)
+	m := s.Module("payments")
+	m.Invariants = append(m.Invariants, spec.Invariant{Statement: strings.Repeat("Cobrança é única — ", 200)})
+	for budget := 150; budget < 260; budget++ {
+		out := Render(s, []string{"payments"}, Options{Budget: budget, OmitSystem: true})
+		if !utf8.ValidString(out) {
+			t.Fatalf("budget %d: cut inside a character", budget)
+		}
+		if len(out) > budget*CharsPerToken {
+			t.Fatalf("budget %d: %d chars", budget, len(out))
+		}
+	}
+	var many []string
+	for i := 0; i < 40; i++ {
+		many = append(many, fmt.Sprintf("scenarios of module_number_%d", i))
+	}
+	note := omittedNote(many)
+	if len(note) > omittedNoteReserve+60 || !strings.Contains(note, "more") || !strings.Contains(note, "module_number_0") {
+		t.Errorf("note (%d chars): %s", len(note), note)
 	}
 }
