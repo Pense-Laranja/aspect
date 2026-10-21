@@ -175,8 +175,9 @@ Markdown documents found in a package directory (README.md, CLAUDE.md,
 design notes) become `briefs/<module>.md` next to the recovered spec and are
 referenced as the module's brief, so the owner's own rules travel with the
 spec. A brief may be any file in the repository, so once the packages keep
-their own `CLAUDE.md`, `aspect briefs _aspect/aspect.yaml -w` points each
-module at it in place and retires the copies, which otherwise drift. Assembly is deterministic again, records provenance under `system.source`,
+their rules in their own `ASPECT.md`, `aspect briefs _aspect/aspect.yaml -w`
+points each module at it in place and retires the copies, which otherwise
+drift. Assembly is deterministic again, records provenance under `system.source`,
 and never fails: whatever it cannot reconcile becomes a warning at the top of
 the YAML. Fragments are cached under `.aspect-cache/`, so an interrupted or
 re-run import only pays for packages not yet described. Review the recovered

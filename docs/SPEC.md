@@ -573,15 +573,17 @@ modules:
   - name: translation
     path: modules/translation
     intent: Orchestrate curriculum translation runs and their publication.
-    brief: ../modules/translation/CLAUDE.md
+    brief: ../modules/translation/ASPECT.md
 ```
 
 The file may be anywhere in the repository that holds the spec (the nearest
 directory at or above the spec's that has a `.git`; the spec's own directory
-when there is none), so a package's own `CLAUDE.md` or `README.md` can be
-its module's brief in place: one document that people, coding assistants
-and the agents all read, instead of a copy beside the spec that drifts from
-it. A path that leads out of the repository, directly or through a symbolic
+when there is none), so a package's own `ASPECT.md` can be its module's
+brief in place: one document that people, `aspect context` and the agents
+all read, instead of a copy beside the spec that drifts from it. Keep it
+apart from a coding assistant's instructions file (`CLAUDE.md`,
+`AGENTS.md`), which the assistant loads whatever its task: that one stays
+short and says to run `aspect context` before changing the package. A path that leads out of the repository, directly or through a symbolic
 link, or into a `.git` directory (whose config can hold a CI job's token),
 fails the load and the file is never read: a brief is sent to a model. In an included fragment the path is relative to the fragment, like
 every path there.
@@ -594,9 +596,10 @@ than choose silently. `aspect import` turns Markdown documents found in a
 package directory (README.md, CLAUDE.md, design notes) into
 `briefs/<module>.md` next to the recovered spec and references them.
 `aspect briefs <spec> -w` later points every placed module whose package has
-a `CLAUDE.md` at that file instead of its copy, says which copies had
-already drifted from it and which held other documents, and lists the
-copies no longer referenced. A brief someone wrote is left alone.
+an `ASPECT.md` at that file instead of its copy, says which copies had
+already drifted from it and which held other documents (the `CLAUDE.md`
+an import copied, say), and lists the copies no longer referenced. A brief
+someone wrote is left alone.
 
 ### Reading the spec of the code at hand
 
@@ -608,10 +611,10 @@ invariants, then its operations and scenarios, then its brief. `-budget N`
 caps it at about N tokens, in that order of priority, and names what it left
 out. It is the same text `aspect review` shows each reviewer about the
 modules its files belong to (section 13), so a project can keep package
-rules in the spec, have them enforced by the review, and still put them in
-front of whoever edits the package: a coding assistant's instructions can
-say "run `aspect context` before changing a package" rather than carry the
-rules themselves.
+rules in the spec and its `ASPECT.md` files, have them enforced by the
+review, and still put them in front of whoever edits the package: a coding
+assistant's `CLAUDE.md` can say "run `aspect context` before changing a
+package" rather than carry the rules itself.
 
 ---
 

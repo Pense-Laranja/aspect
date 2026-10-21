@@ -12,9 +12,13 @@ import (
 // copyMarker opens every brief `aspect import` copies out of a package.
 const copyMarker = "<!-- Recovered by aspect import"
 
-// PackageBrief is the document a package keeps for people and coding
-// assistants, which can be its module's brief in place.
-const PackageBrief = "CLAUDE.md"
+// PackageBrief is the document a package keeps its spec-side rules in (the
+// domain rules, the seams, the history behind them), read in place as its
+// module's brief: by the agents, by `aspect context`, and by people. It is
+// not a coding assistant's instructions file (CLAUDE.md, AGENTS.md), which an
+// assistant loads whatever the task; a project keeps that one short and
+// points it at `aspect context`.
+const PackageBrief = "ASPECT.md"
 
 // BriefMove proposes pointing a module's brief at its package's own
 // document instead of a copy beside the spec.
@@ -28,7 +32,9 @@ type BriefMove struct {
 	// document does not.
 	Dropped []string
 	// Drifted reports that the copy's text of the package document no longer
-	// matches the document: the copy was going stale.
+	// matches the document: the copy was going stale. A copy that never held
+	// the package document (it was written after the import) has not drifted;
+	// its documents are all in Dropped.
 	Drifted bool
 }
 
@@ -42,12 +48,12 @@ const docSeparator = "\n\n---\n\n"
 var copiedDoc = regexp.MustCompile(`(?:^|\n\n---\n\n)<!-- (\S+\.(?i:md)) -->\n\n`)
 
 // InPlaceBriefs proposes, for every module placed by path whose package
-// directory holds a CLAUDE.md, to read that file as its brief: when the
+// directory holds an ASPECT.md, to read that file as its brief: when the
 // module has no brief, or its brief is a copy `aspect import` made. A brief
 // someone wrote is left alone and so is a module already reading its
 // package's document. notes explain each module left as it is that a reader
 // might expect to move: one whose import copy cannot move (no path:, no
-// CLAUDE.md in its package), or one keeping a brief someone wrote. A tier's
+// ASPECT.md in its package), or one keeping a brief someone wrote. A tier's
 // code is under <root>/<spec.Tier.CodeDir>.
 func InPlaceBriefs(s *spec.Spec) (moves []BriefMove, notes []string) {
 	specDir, err := filepath.Abs(s.Dir)
@@ -96,20 +102,28 @@ func InPlaceBriefs(s *spec.Spec) (moves []BriefMove, notes []string) {
 }
 
 // compareCopy reads an import copy against the package document now: the
-// names of the documents it holds besides CLAUDE.md, and whether its
-// CLAUDE.md is no longer the document as it is (briefs() wrote each one
-// trimmed, under its name line, the documents separated by docSeparator).
-// The copy matches only when it holds the document exactly, in its own
-// place, so a document's own comments and rules cannot fake a match.
+// names of the documents it holds besides the package document, and whether
+// its copy of that document is no longer the document as it is (briefs()
+// wrote each one trimmed, under its name line, the documents separated by
+// docSeparator). The copy matches only when it holds the document exactly,
+// in its own place, so a document's own comments and rules cannot fake a
+// match. A copy holding no section for the package document has not
+// drifted: the document came after it.
 func compareCopy(copied, doc string) (dropped []string, drifted bool) {
 	_, body, ok := strings.Cut(copied, "-->\n\n")
 	if !ok {
 		return nil, true
 	}
+	held := false
 	for _, m := range copiedDoc.FindAllStringSubmatch(body, -1) {
-		if m[1] != PackageBrief {
+		if m[1] == PackageBrief {
+			held = true
+		} else {
 			dropped = append(dropped, m[1])
 		}
+	}
+	if !held {
+		return dropped, false
 	}
 	want := "<!-- " + PackageBrief + " -->\n\n" + strings.TrimSpace(doc)
 	for from := 0; ; {

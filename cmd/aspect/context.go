@@ -18,8 +18,9 @@ import (
 // given files or directories (or the modules named): the text `aspect
 // review` puts in a reviewer's prompt, for a person or a coding assistant
 // about to change that code. It is how a project keeps its package rules in
-// the spec and still has them at hand when editing: a CLAUDE.md can say
-// "run aspect context before changing a package" instead of carrying them.
+// the spec and still has them at hand when editing: a coding assistant's
+// CLAUDE.md can say "run aspect context before changing a package" instead
+// of carrying them.
 func runContext(path string, args []string) error {
 	fs := flag.NewFlagSet("context", flag.ContinueOnError)
 	repo := fs.String("repo", "", "the repository the paths are in (default: the spec's repository)")
@@ -103,9 +104,9 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, unowned []stri
 	return names, unowned
 }
 
-// runBriefs points modules' briefs at their packages' own CLAUDE.md, read
+// runBriefs points modules' briefs at their packages' own ASPECT.md, read
 // in place, instead of the copies `aspect import` made beside the spec: one
-// document that people, coding assistants and the agents all read, rather
+// document that people, `aspect context` and the agents all read, rather
 // than two that drift apart.
 func runBriefs(path string, args []string) error {
 	fs := flag.NewFlagSet("briefs", flag.ContinueOnError)
@@ -122,7 +123,7 @@ func runBriefs(path string, args []string) error {
 		fmt.Fprintln(os.Stderr, "aspect:", n)
 	}
 	if len(moves) == 0 {
-		fmt.Println("no brief to move: every placed module with a CLAUDE.md already reads it, or keeps a brief of its own")
+		fmt.Printf("no brief to move: no placed module has an %s it does not already read (or a brief of its own that it keeps)\n", importer.PackageBrief)
 		return nil
 	}
 	set := map[string]string{}

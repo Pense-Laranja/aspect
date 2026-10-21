@@ -166,8 +166,8 @@ func TestSetModuleBriefs(t *testing.T) {
 		"_aspect/aspect.yaml":         "aspect: 1\nsystem:\n  name: g\n  intent: shop\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - name: store\n    path: pkg/store\n    intent: store\n    goals: [G1]\n  - dir: modules/\n",
 		"_aspect/modules/orders.yaml": "name: orders\npath: pkg/orders\nintent: orders\ngoals: [G1]\nbrief: ../briefs/orders.md # recovered by import\n",
 		"_aspect/briefs/orders.md":    "copy",
-		"pkg/orders/CLAUDE.md":        "orders rules",
-		"pkg/store/CLAUDE.md":         "store rules",
+		"pkg/orders/ASPECT.md":        "orders rules",
+		"pkg/store/ASPECT.md":         "store rules",
 	}
 	for rel, content := range files {
 		if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
@@ -175,7 +175,7 @@ func TestSetModuleBriefs(t *testing.T) {
 		}
 	}
 	specPath := filepath.Join(repo, "_aspect", "aspect.yaml")
-	changed, err := SetModuleBriefs(specPath, map[string]string{"orders": "../pkg/orders/CLAUDE.md", "store": "../pkg/store/CLAUDE.md", "missing": "x.md"})
+	changed, err := SetModuleBriefs(specPath, map[string]string{"orders": "../pkg/orders/ASPECT.md", "store": "../pkg/store/ASPECT.md", "missing": "x.md"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,11 +183,11 @@ func TestSetModuleBriefs(t *testing.T) {
 		t.Fatalf("changed %v", changed)
 	}
 	frag, _ := os.ReadFile(filepath.Join(repo, "_aspect", "modules", "orders.yaml"))
-	if !strings.Contains(string(frag), "brief: ../../pkg/orders/CLAUDE.md # recovered by import\n") {
+	if !strings.Contains(string(frag), "brief: ../../pkg/orders/ASPECT.md # recovered by import\n") {
 		t.Errorf("fragment:\n%s", frag)
 	}
 	rootFile, _ := os.ReadFile(specPath)
-	if !strings.Contains(string(rootFile), "  - name: store\n    brief: ../pkg/store/CLAUDE.md\n    path: pkg/store\n") {
+	if !strings.Contains(string(rootFile), "  - name: store\n    brief: ../pkg/store/ASPECT.md\n    path: pkg/store\n") {
 		t.Errorf("root:\n%s", rootFile)
 	}
 	s, err := Load(specPath)

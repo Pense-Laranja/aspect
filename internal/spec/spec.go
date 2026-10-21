@@ -75,12 +75,12 @@ type Dependency struct {
 // system, tier or module must be, kept in its own file so it can run to
 // pages without crowding the YAML. Every agent working on the owner sees the
 // whole text. The file may be anywhere in the repository that holds the
-// spec, so a package's own CLAUDE.md or README.md can be its module's brief
-// in place, read by people, coding assistants and the agents alike, instead
-// of a copy beside the spec that drifts from it.
+// spec, so a package's own ASPECT.md can be its module's brief in place,
+// read by people, `aspect context` and the agents alike, instead of a copy
+// beside the spec that drifts from it.
 type Brief struct {
 	// Path is relative to the spec file's directory. It may climb out of
-	// that directory (../modules/order/CLAUDE.md) but not out of the
+	// that directory (../modules/order/ASPECT.md) but not out of the
 	// repository (Spec.Root).
 	Path string `yaml:"brief,omitempty" json:"brief,omitempty"`
 	// Text is the file's content, filled by Load.

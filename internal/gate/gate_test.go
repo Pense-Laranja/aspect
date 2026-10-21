@@ -611,7 +611,7 @@ func mustParse(t *testing.T, src string) *Config {
 }
 
 // A placed module owns its package's files and nothing by name; a change to
-// its brief (here the package's own CLAUDE.md) or to the spec file it is
+// its brief (here the package's own ASPECT.md) or to the spec file it is
 // written in is a change to the module too. The spec is read from the
 // repository given, not from the working directory.
 func TestBuildPlanModulesFollowPathsBriefsAndSpecFiles(t *testing.T) {
@@ -631,9 +631,9 @@ system:
 modules:
   - dir: modules/
 `,
-		"_aspect/modules/orders.yaml": "name: modules_orders\npath: modules/orders\nintent: orders\ngoals: [G1]\nbrief: ../../modules/orders/CLAUDE.md\nconstraints: [Orders are never deleted.]\ninvariants: [one live charge]\n",
+		"_aspect/modules/orders.yaml": "name: modules_orders\npath: modules/orders\nintent: orders\ngoals: [G1]\nbrief: ../../modules/orders/ASPECT.md\nconstraints: [Orders are never deleted.]\ninvariants: [one live charge]\n",
 		"_aspect/modules/admin.yaml":  "name: admin\npath: admin\nintent: back office\ngoals: [G1]\ninvariants: [x]\n",
-		"modules/orders/CLAUDE.md":    "rules",
+		"modules/orders/ASPECT.md":    "rules",
 		".git/HEAD":                   "ref: refs/heads/main\n",
 	}
 	for rel, content := range files {
@@ -656,8 +656,8 @@ modules:
 		}
 		return out
 	}
-	got := plan("modules/orders/order.go", "modules/orders/sub/x.go", "store/admin.go", "modules/orders/CLAUDE.md", "_aspect/modules/admin.yaml")
-	if want := []string{"modules/orders/order.go", "modules/orders/CLAUDE.md"}; !slices.Equal(got["modules_orders"], want) {
+	got := plan("modules/orders/order.go", "modules/orders/sub/x.go", "store/admin.go", "modules/orders/ASPECT.md", "_aspect/modules/admin.yaml")
+	if want := []string{"modules/orders/order.go", "modules/orders/ASPECT.md"}; !slices.Equal(got["modules_orders"], want) {
 		t.Errorf("modules_orders files = %v, want %v", got["modules_orders"], want)
 	}
 	// store/admin.go is not admin's (the old stem guess said it was); the
@@ -666,7 +666,7 @@ modules:
 		t.Errorf("admin files = %v, want %v", got["admin"], want)
 	}
 	p := BuildPlan(c, "b", "h", []Change{{Path: "modules/orders/order.go", Added: 1}}, repo, "_aspect/aspect.yaml")
-	if len(p.Modules) != 1 || p.Modules[0].Brief != "modules/orders/CLAUDE.md" || !slices.Equal(p.Modules[0].Constraints, []string{"Orders are never deleted."}) {
+	if len(p.Modules) != 1 || p.Modules[0].Brief != "modules/orders/ASPECT.md" || !slices.Equal(p.Modules[0].Constraints, []string{"Orders are never deleted."}) {
 		t.Errorf("module context = %+v", p.Modules)
 	}
 }

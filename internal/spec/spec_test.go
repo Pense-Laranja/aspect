@@ -467,7 +467,7 @@ modules:
 }
 
 // A brief may be a document anywhere in the repository (a package's own
-// CLAUDE.md), so it is read in place rather than copied beside the spec, but
+// ASPECT.md), so it is read in place rather than copied beside the spec, but
 // never a file outside the repository, directly or through a link.
 func TestBriefsInsideTheRepository(t *testing.T) {
 	outside := t.TempDir()
@@ -480,7 +480,7 @@ func TestBriefsInsideTheRepository(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(repo, "pkg", "order", "CLAUDE.md"), []byte("Orders are never deleted."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "pkg", "order", "ASPECT.md"), []byte("Orders are never deleted."), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	write := func(rel, content string) {
@@ -503,13 +503,13 @@ modules:
 		return "name: order\npath: pkg/order\nintent: orders\ngoals: [G1]\nbrief: " + brief + "\nscenarios: [{id: S1, when: a, then: b}]\n"
 	}
 	// Written in an included fragment, the path is relative to the fragment.
-	write("_aspect/modules/order.yaml", module("../../pkg/order/CLAUDE.md"))
+	write("_aspect/modules/order.yaml", module("../../pkg/order/ASPECT.md"))
 	s, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := s.Module("order")
-	if m.Brief.Path != "../pkg/order/CLAUDE.md" || m.Brief.Text != "Orders are never deleted." {
+	if m.Brief.Path != "../pkg/order/ASPECT.md" || m.Brief.Text != "Orders are never deleted." {
 		t.Fatalf("brief = %q %q", m.Brief.Path, m.Brief.Text)
 	}
 	if issues := Validate(s); issues.HasErrors() {

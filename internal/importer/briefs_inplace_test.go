@@ -35,20 +35,20 @@ modules:
   - {name: stale, path: pkg/stale, intent: a, goals: [G1], brief: briefs/stale.md}
   - {name: none, path: pkg/none, intent: a, goals: [G1]}
   - {name: own, path: pkg/own, intent: a, goals: [G1], brief: briefs/own.md}
-  - {name: done, path: pkg/done, intent: a, goals: [G1], brief: ../pkg/done/CLAUDE.md}
+  - {name: done, path: pkg/done, intent: a, goals: [G1], brief: ../pkg/done/ASPECT.md}
   - {name: nodoc, path: pkg/nodoc, intent: a, goals: [G1], brief: briefs/nodoc.md}
   - {name: unplaced, intent: a, goals: [G1], brief: briefs/unplaced.md}
 `,
-		"_aspect/briefs/fresh.md":    copyOf("CLAUDE.md", "fresh rules", "README.md", "usage"),
-		"_aspect/briefs/stale.md":    copyOf("CLAUDE.md", "old rules"),
+		"_aspect/briefs/fresh.md":    copyOf("ASPECT.md", "fresh rules", "README.md", "usage"),
+		"_aspect/briefs/stale.md":    copyOf("ASPECT.md", "old rules"),
 		"_aspect/briefs/own.md":      "Written by the owner.",
 		"_aspect/briefs/nodoc.md":    copyOf("README.md", "usage"),
-		"_aspect/briefs/unplaced.md": copyOf("CLAUDE.md", "x"),
-		"pkg/fresh/CLAUDE.md":        "fresh rules\n",
-		"pkg/stale/CLAUDE.md":        "new rules",
-		"pkg/none/CLAUDE.md":         "rules",
-		"pkg/own/CLAUDE.md":          "rules",
-		"pkg/done/CLAUDE.md":         "rules",
+		"_aspect/briefs/unplaced.md": copyOf("ASPECT.md", "x"),
+		"pkg/fresh/ASPECT.md":        "fresh rules\n",
+		"pkg/stale/ASPECT.md":        "new rules",
+		"pkg/none/ASPECT.md":         "rules",
+		"pkg/own/ASPECT.md":          "rules",
+		"pkg/done/ASPECT.md":         "rules",
 	}
 	for rel, content := range files {
 		p := filepath.Join(repo, filepath.FromSlash(rel))
@@ -71,19 +71,19 @@ modules:
 	if len(got) != 3 {
 		t.Fatalf("moves = %+v", moves)
 	}
-	if mv := got["fresh"]; mv.To != "../pkg/fresh/CLAUDE.md" || mv.Drifted || !slices.Equal(mv.Dropped, []string{"README.md"}) {
+	if mv := got["fresh"]; mv.To != "../pkg/fresh/ASPECT.md" || mv.Drifted || !slices.Equal(mv.Dropped, []string{"README.md"}) {
 		t.Errorf("fresh = %+v", mv)
 	}
 	if mv := got["stale"]; !mv.Drifted || mv.From != "briefs/stale.md" {
 		t.Errorf("stale = %+v", mv)
 	}
-	if mv := got["none"]; mv.From != "" || mv.To != "../pkg/none/CLAUDE.md" {
+	if mv := got["none"]; mv.From != "" || mv.To != "../pkg/none/ASPECT.md" {
 		t.Errorf("none = %+v", mv)
 	}
 	if len(notes) != 3 {
 		t.Errorf("want notes for own, nodoc and unplaced, got %q", notes)
 	}
-	for _, want := range []string{"own: keeps its brief", "nodoc: pkg/nodoc/CLAUDE.md does not exist", "unplaced: has no path:"} {
+	for _, want := range []string{"own: keeps its brief", "nodoc: pkg/nodoc/ASPECT.md does not exist", "unplaced: has no path:"} {
 		if !slices.ContainsFunc(notes, func(n string) bool { return strings.HasPrefix(n, want) }) {
 			t.Errorf("no note %q in %q", want, notes)
 		}
@@ -101,11 +101,11 @@ func TestCompareCopy(t *testing.T) {
 		dropped []string
 		drifted bool
 	}{
-		"same":         {head + "<!-- CLAUDE.md -->\n\n" + doc, nil, false},
-		"with others":  {head + "<!-- AGENTS.md -->\n\nAgents." + docSeparator + "<!-- CLAUDE.md -->\n\n" + doc + docSeparator + "<!-- README.md -->\n\nUsage.", []string{"AGENTS.md", "README.md"}, false},
-		"changed":      {head + "<!-- CLAUDE.md -->\n\nOld rules.", nil, true},
-		"no CLAUDE.md": {head + "<!-- README.md -->\n\nUsage.", []string{"README.md"}, true},
-		"not a copy":   {"Written by hand.", nil, true},
+		"same":          {head + "<!-- ASPECT.md -->\n\n" + doc, nil, false},
+		"with others":   {head + "<!-- AGENTS.md -->\n\nAgents." + docSeparator + "<!-- ASPECT.md -->\n\n" + doc + docSeparator + "<!-- README.md -->\n\nUsage.", []string{"AGENTS.md", "README.md"}, false},
+		"changed":       {head + "<!-- ASPECT.md -->\n\nOld rules.", nil, true},
+		"written after": {head + "<!-- CLAUDE.md -->\n\nRules.", []string{"CLAUDE.md"}, false},
+		"not a copy":    {"Written by hand.", nil, true},
 	} {
 		dropped, drifted := compareCopy(tc.copied, doc)
 		if !slices.Equal(dropped, tc.dropped) || drifted != tc.drifted {

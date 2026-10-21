@@ -35,7 +35,7 @@ Usage:
   aspect run      <spec.yaml> [flags]  generate code and tests, run them, validate goals
   aspect drift    <spec.yaml> [flags]  re-validate existing code against the spec without regenerating
   aspect paths    <spec.yaml> [flags]  record each imported module's package directory (path:) in the spec
-  aspect briefs   <spec.yaml> [-w]     read each module's brief from its package's CLAUDE.md in place
+  aspect briefs   <spec.yaml> [-w]     read each module's brief from its package's ASPECT.md in place
                                        instead of an import copy beside the spec
   aspect context  <spec.yaml> [flags] <path|module>...
                                        what the spec says about the modules owning these files: the

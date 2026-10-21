@@ -107,7 +107,7 @@ spec is missing, so do not report it again.
    user impact yet is `medium`.
 6. **In author mode**, edit only the spec entry point, files it includes,
    and briefs. A brief may be a package's own document elsewhere in the
-   repository (`brief: ../modules/order/CLAUDE.md`); edit it where it is,
+   repository (`brief: ../modules/order/ASPECT.md`); edit it where it is,
    never a copy of it. In a split spec, edit the
    module's own fragment, and give a new module a new `modules/<name>.yaml`
    rather than growing the entry point. Keep edits minimal and in the spec's own voice:

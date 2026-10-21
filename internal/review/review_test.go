@@ -708,7 +708,7 @@ func TestCompareShowsAnAgentMissingFromOneRun(t *testing.T) {
 
 // Reviewers have no tools, so the rules the spec states about the code a
 // change touches are put in their prompt: the system's constraints, the
-// module's invariants and its brief (here the package's CLAUDE.md, read in
+// module's invariants and its brief (here the package's ASPECT.md, read in
 // place). A zero budget shows none.
 func TestReviewersAreShownTheTouchedModulesSpec(t *testing.T) {
 	repo := testRepo(t)
@@ -725,7 +725,7 @@ modules:
     path: .
     intent: the package
     goals: [G1]
-    brief: ../CLAUDE.md
+    brief: ../ASPECT.md
     invariants: [A() never panics.]
   - name: other
     path: other
@@ -733,7 +733,7 @@ modules:
     goals: [G1]
     invariants: [Other rule.]
 `)
-	writeFile(t, filepath.Join(repo, "CLAUDE.md"), "Keep A tiny.\n")
+	writeFile(t, filepath.Join(repo, "ASPECT.md"), "Keep A tiny.\n")
 	gitIn(t, repo, "add", "-A")
 	gitIn(t, repo, "commit", "-q", "-m", "spec")
 
@@ -741,7 +741,7 @@ modules:
 	te.Config.SpecBudget = 30000
 	te.run(t, Options{Head: "feature"})
 	prompt := te.model.prompts["red-team"]
-	for _, want := range []string{"### Specification of the touched modules (_aspect/aspect.yaml)", "No float money.", "[0] A() never panics.", "Keep A tiny.", "### Brief (CLAUDE.md)"} {
+	for _, want := range []string{"### Specification of the touched modules (_aspect/aspect.yaml)", "No float money.", "[0] A() never panics.", "Keep A tiny.", "### Brief (ASPECT.md)"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, prompt)
 		}
