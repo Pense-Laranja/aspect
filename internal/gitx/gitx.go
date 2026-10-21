@@ -72,5 +72,5 @@ func Plan(ctx context.Context, dir string, c *gate.Config, base, head string) (*
 		_, err := Run(ctx, dir, "cat-file", "-e", headSHA+":"+path)
 		return err == nil
 	})
-	return gate.BuildPlan(c, dir, baseSHA, headSHA, changes, spec), nil
+	return gate.BuildPlan(c, baseSHA, headSHA, changes, dir, spec), nil
 }

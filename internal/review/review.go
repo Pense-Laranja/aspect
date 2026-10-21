@@ -184,7 +184,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		}
 		shared = strings.TrimRight("### Pull request\nTitle: "+pr.Title+"\n\n"+body, " \n\t")
 	}
-	specOf := e.specContexts(repo, plan)
+	specOf := e.specContexts(repo, dir, plan)
 	rv := &reviewer{client: e.Client, engine: e.engineLabel(), model: e.Config.GeminiModel, promptBudget: e.Config.PromptBudget}
 	if e.Config.MaxConcurrency > 0 {
 		rv.slots = make(chan struct{}, e.Config.MaxConcurrency)
@@ -221,19 +221,23 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 // system's constraints and the rules of the modules its files belong to
 // (plan.Agents[i].Modules), within Config.SpecBudget. Reviewers have no
 // tools; this is how a rule written in the spec reaches them. The spec is
-// read from the working tree, as the plan's modules were. With no spec, a
-// spec that does not load, or a zero budget, every agent is shown nothing.
-func (e *Engine) specContexts(repo string, plan *gate.Plan) func(gate.Planned) string {
+// read from the working tree, as the plan's modules were. With no spec or
+// a zero budget, every agent is shown nothing. So it is with a spec that
+// does not load, and then the run says so in <run dir>/spec-context.error.txt:
+// a review that never saw the spec must not look like one that did.
+func (e *Engine) specContexts(repo, dir string, plan *gate.Plan) func(gate.Planned) string {
 	none := func(gate.Planned) string { return "" }
 	if e.Config.SpecBudget <= 0 || plan.Spec == "" || plan.Spec == gate.NoSpec {
 		return none
 	}
 	sp, err := spec.Load(filepath.Join(repo, filepath.FromSlash(plan.Spec)))
 	if err != nil {
+		msg := fmt.Sprintf("spec %s did not load, so reviewers were shown none of it: %v\n", plan.Spec, err)
+		_ = os.WriteFile(filepath.Join(dir, specContextError), []byte(msg), 0o644)
 		return none
 	}
 	return func(a gate.Planned) string {
-		text := speccontext.Render(sp, a.Modules, speccontext.Options{Budget: e.Config.SpecBudget, System: true, Briefs: true})
+		text := speccontext.Render(sp, a.Modules, speccontext.Options{Budget: e.Config.SpecBudget})
 		if text == "" {
 			return ""
 		}
@@ -243,6 +247,9 @@ func (e *Engine) specContexts(repo string, plan *gate.Plan) func(gate.Planned) s
 			"diff edits the spec itself, judge that edit too: a rule weakened only so that the code passes is a finding.\n\n" + text
 	}
 }
+
+// specContextError names the file a run records a spec that did not load in.
+const specContextError = "spec-context.error.txt"
 
 func (e *Engine) gatesPath(repo string) string {
 	p := filepath.Join(repo, filepath.FromSlash(gate.DefaultConfigPath))

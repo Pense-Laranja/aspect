@@ -139,12 +139,12 @@ func TestBuildPlan(t *testing.T) {
 		{"nothing", nil, nil},
 	}
 	for _, tc := range cases {
-		p := BuildPlan(c, "", "b", "h", tc.changes, c.Spec)
+		p := BuildPlan(c, "b", "h", tc.changes, "", c.Spec)
 		if got := agents(p); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: agents = %v, want %v", tc.name, got, tc.want)
 		}
 	}
-	p := BuildPlan(c, "", "b", "h", []Change{{Path: "a.go", Added: 1}, {Path: "README.md", Added: 4, Deleted: 1}}, c.Spec)
+	p := BuildPlan(c, "b", "h", []Change{{Path: "a.go", Added: 1}, {Path: "README.md", Added: 4, Deleted: 1}}, "", c.Spec)
 	if p.ChangedFiles != 2 || p.ChangedLines != 6 {
 		t.Errorf("counts = %d files, %d lines", p.ChangedFiles, p.ChangedLines)
 	}
@@ -163,7 +163,7 @@ func TestBuildPlanWithModules(t *testing.T) {
 		{Path: "ledger/ledger.go", Added: 10, Deleted: 2},
 		{Path: "README.md", Added: 5},
 	}
-	p := BuildPlan(c, "", "base123", "head456", changes, specPath)
+	p := BuildPlan(c, "base123", "head456", changes, "", specPath)
 	if len(p.Modules) == 0 {
 		t.Fatal("expected modules to be populated in plan")
 	}
@@ -271,7 +271,7 @@ func plan(c *Config, files ...string) *Plan {
 	for _, f := range files {
 		ch = append(ch, Change{Path: f, Added: 1})
 	}
-	return BuildPlan(c, "", "aaaaaaa1", "bbbbbbb2", ch, c.Spec)
+	return BuildPlan(c, "aaaaaaa1", "bbbbbbb2", ch, "", c.Spec)
 }
 
 func TestCheck(t *testing.T) {
@@ -564,7 +564,7 @@ func TestWholeFileLocation(t *testing.T) {
 
 func TestNoSpec(t *testing.T) {
 	c := mustConfig(t)
-	p := BuildPlan(c, "", "aaaaaaa1", "bbbbbbb2", []Change{{Path: "README.md", Added: 1}}, NoSpec)
+	p := BuildPlan(c, "aaaaaaa1", "bbbbbbb2", []Change{{Path: "README.md", Added: 1}}, "", NoSpec)
 	if p.Spec != NoSpec {
 		t.Fatalf("spec = %q, want %q", p.Spec, NoSpec)
 	}
@@ -651,7 +651,7 @@ modules:
 			ch = append(ch, Change{Path: p, Added: 1})
 		}
 		out := map[string][]string{}
-		for _, m := range BuildPlan(c, repo, "b", "h", ch, "_aspect/aspect.yaml").Modules {
+		for _, m := range BuildPlan(c, "b", "h", ch, repo, "_aspect/aspect.yaml").Modules {
 			out[m.Name] = m.Files
 		}
 		return out
@@ -665,7 +665,7 @@ modules:
 	if want := []string{"_aspect/modules/admin.yaml"}; !slices.Equal(got["admin"], want) {
 		t.Errorf("admin files = %v, want %v", got["admin"], want)
 	}
-	p := BuildPlan(c, repo, "b", "h", []Change{{Path: "modules/orders/order.go", Added: 1}}, "_aspect/aspect.yaml")
+	p := BuildPlan(c, "b", "h", []Change{{Path: "modules/orders/order.go", Added: 1}}, repo, "_aspect/aspect.yaml")
 	if len(p.Modules) != 1 || p.Modules[0].Brief != "modules/orders/CLAUDE.md" || !slices.Equal(p.Modules[0].Constraints, []string{"Orders are never deleted."}) {
 		t.Errorf("module context = %+v", p.Modules)
 	}

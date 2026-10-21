@@ -582,8 +582,8 @@ when there is none), so a package's own `CLAUDE.md` or `README.md` can be
 its module's brief in place: one document that people, coding assistants
 and the agents all read, instead of a copy beside the spec that drifts from
 it. A path that leads out of the repository, directly or through a symbolic
-link, fails the load and the file is never read: a brief is sent to a
-model. In an included fragment the path is relative to the fragment, like
+link, or into a `.git` directory (whose config can hold a CI job's token),
+fails the load and the file is never read: a brief is sent to a model. In an included fragment the path is relative to the fragment, like
 every path there.
 
 Every agent working on the owner sees the whole text under a "brief"
@@ -687,7 +687,7 @@ Topology
 - A non-sqlite test engine without `dsn_env`.
 - An external interface without a `service` name; an external surface nobody consumes.
 - `system.language`, `module_path` or `stack` set alongside `tiers`; a `tier` field on a tier-local database; a single tier written under `tiers`.
-- A `brief` that was not loaded (spec parsed from memory) or is empty. A brief path that is absolute or leads out of the repository (out of the spec's directory for a spec parsed from memory) is an error.
+- A `brief` that was not loaded (spec parsed from memory) or is empty. A brief path that is absolute, leads out of the repository (out of the spec's directory for a spec parsed from memory) or into a `.git` directory is an error.
 - A dependency that was not loaded (spec parsed from memory).
 - `operations` listed on a surface with no `entity`; an operation that is not a lowercase verb (a function name such as `ExportCSVHandler`).
 - An `http` or `web` route that is not a path (`event:Save`, `tool:x`, `(in-process)`).

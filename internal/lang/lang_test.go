@@ -228,3 +228,61 @@ func TestOwnerArbitratesOverlaps(t *testing.T) {
 		}
 	}
 }
+
+// A tier's code is under <tier>/; a path without its tier's prefix is no
+// module's, and a directory resolves to the module whose code is the files
+// directly in it.
+func TestModuleOfTiers(t *testing.T) {
+	s, err := spec.Parse([]byte(`aspect: 1
+system: {name: g, intent: x, goals: [{id: G1, statement: x}]}
+tiers:
+  - name: backend
+    intent: api
+    language: go
+    module_path: example.com/g
+    modules:
+      - {name: orders, path: pkg/orders, intent: a, goals: [G1]}
+      - {name: shop, intent: a, goals: [G1]}
+  - name: app
+    intent: ui
+    language: swift
+    module_path: example.com/app
+    modules:
+      - {name: UI, intent: a, goals: [G1]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for file, want := range map[string]string{
+		"backend/pkg/orders/order.go":  "backend/orders",
+		"backend/pkg/orders/sub/x.go":  "",
+		"backend/shop/deep/x.go":       "backend/shop",
+		"pkg/orders/order.go":          "",
+		"app/Sources/UI/View.swift":    "app/UI",
+		"backend2/pkg/orders/order.go": "",
+		"backend":                      "",
+	} {
+		got := ""
+		if tier, m := ModuleOf(s, file); m != nil {
+			got = tier.Name + "/" + m.Name
+		}
+		if got != want {
+			t.Errorf("ModuleOf(%q) = %q, want %q", file, got, want)
+		}
+	}
+	for dir, want := range map[string]string{
+		"backend/pkg/orders":     "orders",
+		"backend/pkg/orders/sub": "",
+		"backend/pkg":            "",
+		"backend/shop/deep":      "shop",
+		"pkg/orders":             "",
+	} {
+		got := ""
+		if _, m := ModuleOfDir(s, dir); m != nil {
+			got = m.Name
+		}
+		if got != want {
+			t.Errorf("ModuleOfDir(%q) = %q, want %q", dir, got, want)
+		}
+	}
+}

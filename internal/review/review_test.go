@@ -761,3 +761,22 @@ modules:
 		t.Error("a zero spec budget shows no spec")
 	}
 }
+
+// A spec that does not load (here a brief outside the repository) leaves
+// the reviewers without it, and the run records why.
+func TestASpecThatDoesNotLoadIsRecorded(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: root, path: ., intent: a, goals: [G1], brief: ../../outside.md}\n")
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "spec")
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	te.Config.SpecBudget = 30000
+	res := te.run(t, Options{Head: "feature"})
+	if p := te.model.prompts["red-team"]; strings.Contains(p, "### Specification") {
+		t.Error("a spec that does not load shows nothing")
+	}
+	b, err := os.ReadFile(filepath.Join(res.RunDir, specContextError))
+	if err != nil || !strings.Contains(string(b), "must stay inside the repository") {
+		t.Errorf("the run must record the load error, got %q (%v)", b, err)
+	}
+}

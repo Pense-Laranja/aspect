@@ -559,15 +559,16 @@ func (s *Spec) BriefFile(p string) (string, error) {
 	if err != nil {
 		root = s.Root
 	}
-	if abs, err := filepath.Abs(resolved); err != nil || !inside(root, abs) {
+	if abs, err := filepath.Abs(resolved); err != nil || !Inside(root, abs) {
 		return "", fmt.Errorf("%q resolves outside the repository %s through a symbolic link", p, s.Root)
 	}
 	return file, nil
 }
 
-// checkBriefPath is the lexical rule: relative, and inside the repository
+// checkBriefPath is the lexical rule: relative, inside the repository
 // (inside the spec's directory for a spec parsed from memory, which has no
-// repository).
+// repository), and not under a .git directory, whose config can hold a CI
+// job's token.
 func (s *Spec) checkBriefPath(p string) error {
 	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
 		return fmt.Errorf("%q must be a relative path", p)
@@ -582,15 +583,22 @@ func (s *Spec) checkBriefPath(p string) error {
 	if err != nil {
 		return err
 	}
-	if !inside(s.Root, abs) {
+	if !Inside(s.Root, abs) {
 		return fmt.Errorf("%q must stay inside the repository %s", p, s.Root)
+	}
+	if rel, err := filepath.Rel(s.Root, abs); err == nil {
+		for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+			if seg == ".git" {
+				return fmt.Errorf("%q is under .git, which holds no brief and may hold credentials", p)
+			}
+		}
 	}
 	return nil
 }
 
-// inside reports whether path is dir or below it; both are absolute and
+// Inside reports whether path is dir or below it; both are absolute and
 // clean.
-func inside(dir, path string) bool {
+func Inside(dir, path string) bool {
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
@@ -768,6 +776,12 @@ func (t *Tier) LanguageStack() *LanguageStack {
 }
 
 // ModuleRefs returns pointers to the tier's modules, in order.
+// CodeDir is where the tier's code lives, relative to the repository the
+// spec describes: <tier>/ for a tier of a multi-tier spec, the root ("")
+// for the implicit tier of a single-tier spec, whose Name is empty. It is
+// the layout `aspect drift -repo` checks.
+func (t *Tier) CodeDir() string { return t.Name }
+
 func (t *Tier) ModuleRefs() []*Module {
 	out := make([]*Module, len(t.Modules))
 	for i := range t.Modules {

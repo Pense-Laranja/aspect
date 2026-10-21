@@ -32,26 +32,30 @@ type BriefMove struct {
 	Drifted bool
 }
 
-var copiedDoc = regexp.MustCompile(`(?m)^<!-- (\S+) -->$`)
+// docSeparator is what briefs() writes between two copied documents.
+const docSeparator = "\n\n---\n\n"
+
+// copiedDoc is the line briefs() writes before each copied document, at the
+// start of the copy's body or right after a separator. The documents it
+// copies are Markdown files, so a name ends in .md: a document's own
+// "<!-- TODO -->" after a horizontal rule is not one.
+var copiedDoc = regexp.MustCompile(`(?:^|\n\n---\n\n)<!-- (\S+\.(?i:md)) -->\n\n`)
 
 // InPlaceBriefs proposes, for every module placed by path whose package
 // directory holds a CLAUDE.md, to read that file as its brief: when the
 // module has no brief, or its brief is a copy `aspect import` made. A brief
 // someone wrote is left alone and so is a module already reading its
-// package's document. notes explain the modules left as they are that had a
-// copy. A single-tier spec's code is the repository root (Spec.Root), a
-// tier's is <root>/<tier>.
+// package's document. notes explain each module left as it is that a reader
+// might expect to move: one whose import copy cannot move (no path:, no
+// CLAUDE.md in its package), or one keeping a brief someone wrote. A tier's
+// code is under <root>/<spec.Tier.CodeDir>.
 func InPlaceBriefs(s *spec.Spec) (moves []BriefMove, notes []string) {
-	multi := len(s.Tiers) > 0
 	specDir, err := filepath.Abs(s.Dir)
 	if err != nil {
 		return nil, []string{err.Error()}
 	}
 	for _, t := range s.EffectiveTiers() {
-		codeRoot := s.Root
-		if multi {
-			codeRoot = filepath.Join(s.Root, t.Name)
-		}
+		codeRoot := filepath.Join(s.Root, filepath.FromSlash(t.CodeDir()))
 		for _, m := range t.ModuleRefs() {
 			isCopy := strings.HasPrefix(strings.TrimSpace(m.Brief.Text), copyMarker)
 			if !m.Placed() {
@@ -91,27 +95,36 @@ func InPlaceBriefs(s *spec.Spec) (moves []BriefMove, notes []string) {
 	return moves, notes
 }
 
-// compareCopy reads an import copy (the marker, then each document under an
-// <!-- NAME --> line, separated by ---) against the package document now.
+// compareCopy reads an import copy against the package document now: the
+// names of the documents it holds besides CLAUDE.md, and whether its
+// CLAUDE.md is no longer the document as it is (briefs() wrote each one
+// trimmed, under its name line, the documents separated by docSeparator).
+// The copy matches only when it holds the document exactly, in its own
+// place, so a document's own comments and rules cannot fake a match.
 func compareCopy(copied, doc string) (dropped []string, drifted bool) {
-	locs := copiedDoc.FindAllStringSubmatchIndex(copied, -1)
-	found := false
-	for i, loc := range locs {
-		name := copied[loc[2]:loc[3]]
-		if name != PackageBrief {
-			dropped = append(dropped, name)
-			continue
-		}
-		end := len(copied)
-		if i+1 < len(locs) {
-			end = locs[i+1][0]
-		}
-		body := strings.TrimSuffix(strings.TrimSpace(copied[loc[1]:end]), "---")
-		found = true
-		drifted = strings.TrimSpace(body) != strings.TrimSpace(doc)
+	_, body, ok := strings.Cut(copied, "-->\n\n")
+	if !ok {
+		return nil, true
 	}
-	if !found {
-		drifted = true
+	for _, m := range copiedDoc.FindAllStringSubmatch(body, -1) {
+		if m[1] != PackageBrief {
+			dropped = append(dropped, m[1])
+		}
 	}
-	return dropped, drifted
+	want := "<!-- " + PackageBrief + " -->\n\n" + strings.TrimSpace(doc)
+	for from := 0; ; {
+		i := strings.Index(body[from:], want)
+		if i < 0 {
+			return dropped, true
+		}
+		at := from + i
+		tail := body[at+len(want):]
+		startsDoc := at == 0 || strings.HasSuffix(body[:at], docSeparator)
+		next := copiedDoc.FindStringIndex(tail)
+		endsDoc := strings.TrimRight(tail, "\n") == "" || (next != nil && next[0] == 0)
+		if startsDoc && endsDoc {
+			return dropped, false
+		}
+		from = at + 1
+	}
 }

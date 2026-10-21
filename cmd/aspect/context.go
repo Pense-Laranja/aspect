@@ -32,15 +32,9 @@ func runContext(path string, args []string) error {
 	if fs.NArg() == 0 {
 		return errors.New("context: name at least one file, directory or module")
 	}
-	s, err := spec.Load(path)
+	s, _, err := loadValidated(path)
 	if err != nil {
 		return err
-	}
-	if issues := spec.Validate(s); issues.HasErrors() {
-		for _, i := range issues {
-			fmt.Fprintln(os.Stderr, i)
-		}
-		return fmt.Errorf("spec has errors")
 	}
 	root := *repo
 	if root == "" {
@@ -53,7 +47,7 @@ func runContext(path string, args []string) error {
 	if len(names) == 0 {
 		return exitCode{code: 1, msg: "nothing to show"}
 	}
-	fmt.Print(speccontext.Render(s, names, speccontext.Options{Budget: *budget, System: *system, Briefs: *briefs}))
+	fmt.Print(speccontext.Render(s, names, speccontext.Options{Budget: *budget, OmitSystem: !*system, OmitBriefs: !*briefs}))
 	return nil
 }
 
@@ -85,22 +79,22 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, unowned []stri
 			unowned = append(unowned, a)
 			continue
 		}
-		rel, err := filepath.Rel(rootAbs, abs)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if !spec.Inside(rootAbs, abs) {
 			unowned = append(unowned, a+" (outside the repository "+rootAbs+")")
 			continue
 		}
+		rel, _ := filepath.Rel(rootAbs, abs)
 		file := filepath.ToSlash(rel)
+		var m *spec.Module
 		if info.IsDir() {
-			// A file directly in the directory: its package's module.
 			if file == "." {
 				file = ""
-			} else {
-				file += "/"
 			}
-			file += "_"
+			_, m = lang.ModuleOfDir(s, file)
+		} else {
+			_, m = lang.ModuleOf(s, file)
 		}
-		if _, m := lang.ModuleOf(s, file); m != nil {
+		if m != nil {
 			add(m.Name)
 		} else {
 			unowned = append(unowned, a)

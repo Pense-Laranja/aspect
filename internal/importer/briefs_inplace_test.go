@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/eideroliveira/aspect/internal/spec"
@@ -81,5 +82,34 @@ modules:
 	}
 	if len(notes) != 3 {
 		t.Errorf("want notes for own, nodoc and unplaced, got %q", notes)
+	}
+	for _, want := range []string{"own: keeps its brief", "nodoc: pkg/nodoc/CLAUDE.md does not exist", "unplaced: has no path:"} {
+		if !slices.ContainsFunc(notes, func(n string) bool { return strings.HasPrefix(n, want) }) {
+			t.Errorf("no note %q in %q", want, notes)
+		}
+	}
+}
+
+// Only a name line at the start of a copy or after briefs()' separator
+// begins a document: a document's own comments, rules and separators-alike
+// stay in it.
+func TestCompareCopy(t *testing.T) {
+	head := copyMarker + " from example.com/g. Edit freely; this is the module's brief. -->\n\n"
+	doc := "# Pkg\n\nRules.\n\n<!-- prettier-ignore -->\n| a | b |\n\n---\n\n<!-- TODO -->\n\nMore.\n\n---"
+	for name, tc := range map[string]struct {
+		copied  string
+		dropped []string
+		drifted bool
+	}{
+		"same":         {head + "<!-- CLAUDE.md -->\n\n" + doc, nil, false},
+		"with others":  {head + "<!-- AGENTS.md -->\n\nAgents." + docSeparator + "<!-- CLAUDE.md -->\n\n" + doc + docSeparator + "<!-- README.md -->\n\nUsage.", []string{"AGENTS.md", "README.md"}, false},
+		"changed":      {head + "<!-- CLAUDE.md -->\n\nOld rules.", nil, true},
+		"no CLAUDE.md": {head + "<!-- README.md -->\n\nUsage.", []string{"README.md"}, true},
+		"not a copy":   {"Written by hand.", nil, true},
+	} {
+		dropped, drifted := compareCopy(tc.copied, doc)
+		if !slices.Equal(dropped, tc.dropped) || drifted != tc.drifted {
+			t.Errorf("%s: dropped %q drifted %v, want %q %v", name, dropped, drifted, tc.dropped, tc.drifted)
+		}
 	}
 }

@@ -20,19 +20,31 @@ import (
 	"github.com/eideroliveira/aspect/internal/spec"
 )
 
-// CharsPerToken is the estimate the budget is counted in, the same one the
-// review engine splits diffs by.
-const CharsPerToken = 4
+// CharsPerToken is the estimate the budget is counted in. It is the review
+// engine's (internal/review's charsPerToken), which errs toward fewer
+// tokens per character, so a budget in tokens means the same in both.
+const CharsPerToken = 3
 
-// Options shape a rendering.
+const (
+	// omittedNoteReserve is kept for the closing "Left out ..." note.
+	omittedNoteReserve = 200
+	// cutMarkerReserve is room for the "[cut to fit the size limit]" line.
+	cutMarkerReserve = 60
+	// minCutRoom: below this much room a part is left out rather than cut,
+	// since a few words of it would say nothing.
+	minCutRoom = 160
+)
+
+// Options shape a rendering. The zero value renders everything.
 type Options struct {
 	// Budget is the most tokens the rendering may take (estimated at
 	// CharsPerToken); 0 is no limit.
 	Budget int
-	// System adds the system's constraints, which bind every module.
-	System bool
-	// Briefs adds each module's brief.
-	Briefs bool
+	// OmitSystem leaves out the system's constraints, which bind every
+	// module.
+	OmitSystem bool
+	// OmitBriefs leaves out the modules' briefs.
+	OmitBriefs bool
 }
 
 // part is one piece the budget decides on.
@@ -68,7 +80,7 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 		}
 	}
 	var parts []part
-	if opt.System && len(s.System.Constraints) > 0 {
+	if !opt.OmitSystem && len(s.System.Constraints) > 0 {
 		var b strings.Builder
 		b.WriteString("## System constraints (they bind every module)\n\n")
 		for _, c := range s.System.Constraints {
@@ -87,7 +99,7 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 			parts = append(parts, part{module: i, kind: kindScenarios, label: "scenarios of " + m.Name, text: t})
 		}
 	}
-	if opt.Briefs {
+	if !opt.OmitBriefs {
 		for i, m := range mods {
 			if text := strings.TrimSpace(m.Brief.Text); text != "" {
 				where := briefPath(s, m)
@@ -129,7 +141,7 @@ func fit(parts []part, budget int) (kept []part, omitted []string) {
 	if budget <= 0 {
 		return parts, nil
 	}
-	room := budget*CharsPerToken - 200 // the "left out" note
+	room := budget*CharsPerToken - omittedNoteReserve
 	dropped := map[int]bool{}
 	for _, p := range parts {
 		switch {
@@ -138,8 +150,8 @@ func fit(parts []part, budget int) (kept []part, omitted []string) {
 		case len(p.text) <= room:
 			kept = append(kept, p)
 			room -= len(p.text)
-		case p.truncatable && room > 160:
-			cut := p.text[:runeStart(p.text, room-60)]
+		case p.truncatable && room > minCutRoom:
+			cut := p.text[:runeStart(p.text, room-cutMarkerReserve)]
 			p.text = cut + "\n[cut to fit the size limit]\n"
 			kept = append(kept, p)
 			room = 0

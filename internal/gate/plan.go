@@ -66,11 +66,11 @@ type Planned struct {
 
 // BuildPlan decides which gates apply to the changes, in the order
 // gates.yaml lists them. A gate applies when at least one changed file
-// matches its paths and its When condition, if any, holds. spec is the
+// matches its paths and its When condition, if any, holds. specPath is the
 // entry point Config.ResolveSpec chose, or NoSpec, relative to repo (the
 // repository the changes' paths are relative to; "" is the working
 // directory). The spec is read from repo's working tree.
-func BuildPlan(c *Config, repo, base, head string, changes []Change, specPath string) *Plan {
+func BuildPlan(c *Config, base, head string, changes []Change, repo, specPath string) *Plan {
 	p := &Plan{Schema: PlanSchema, Spec: specPath, Base: base, Head: head, ChangedFiles: len(changes), Agents: []Planned{}}
 	for _, ch := range changes {
 		p.ChangedLines += ch.Added + ch.Deleted
@@ -141,10 +141,10 @@ func moduleContexts(sp *spec.Spec, repo string, changes []Change) []ModuleContex
 		if err != nil {
 			return ""
 		}
-		r, err := filepath.Rel(repoAbs, abs)
-		if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		if !spec.Inside(repoAbs, abs) {
 			return ""
 		}
+		r, _ := filepath.Rel(repoAbs, abs)
 		return filepath.ToSlash(r)
 	}
 	owner := map[string]string{}

@@ -212,27 +212,69 @@ func PascalCase(s string) string {
 
 // ModuleOf returns the module of s that owns file, a slash path relative
 // to the repository the spec describes, and its tier; nil when no module
-// owns it. The layout is the one `aspect drift -repo` checks: a
-// single-tier spec's code is the repository root, a tier's code is
-// <tier>/. A tier whose language has no profile owns nothing.
+// owns it. A tier's code is under its spec.Tier.CodeDir. A tier whose
+// language has no profile owns nothing.
 func ModuleOf(s *spec.Spec, file string) (*spec.Tier, *spec.Module) {
-	multi := len(s.Tiers) > 0
+	return ownerIn(s, file, (*Profile).Owner)
+}
+
+// ModuleOfDir is ModuleOf for a directory (a slash path relative to the
+// repository, "" for its root): the module whose code is the files directly
+// in it.
+func ModuleOfDir(s *spec.Spec, dir string) (*spec.Tier, *spec.Module) {
+	return ownerIn(s, dir, (*Profile).OwnerOfDir)
+}
+
+func ownerIn(s *spec.Spec, path string, owner func(*Profile, []*spec.Module, string) *spec.Module) (*spec.Tier, *spec.Module) {
 	for _, t := range s.EffectiveTiers() {
-		rel := file
-		if multi {
-			prefix := t.Name + "/"
-			if !strings.HasPrefix(file, prefix) {
-				continue
-			}
-			rel = file[len(prefix):]
+		rel, ok := underDir(path, t.CodeDir())
+		if !ok {
+			continue
 		}
 		p, err := For(t.Language)
 		if err != nil {
 			continue
 		}
-		if m := p.Owner(t.ModuleRefs(), rel); m != nil {
+		if m := owner(p, t.ModuleRefs(), rel); m != nil {
 			return t, m
 		}
 	}
 	return nil, nil
+}
+
+// underDir strips dir ("" is the root) from path, reporting whether path
+// is dir itself or below it.
+func underDir(path, dir string) (string, bool) {
+	switch {
+	case dir == "":
+		return path, true
+	case path == dir:
+		return "", true
+	case strings.HasPrefix(path, dir+"/"):
+		return path[len(dir)+1:], true
+	}
+	return "", false
+}
+
+// OwnerOfDir returns the module among mods whose code is the files directly
+// in dir (a slash path relative to the tier's code root, "" for the root),
+// as Owner would for a file there, or nil.
+func (p *Profile) OwnerOfDir(mods []*spec.Module, dir string) *spec.Module {
+	if dir != "" {
+		dir = strings.TrimSuffix(dir, "/") + "/"
+	}
+	var best *spec.Module
+	bestLen := -1
+	for _, m := range mods {
+		for _, d := range []string{p.CodeDir(m), p.TestDir(m)} {
+			owns := dir == d || (!m.Placed() && strings.HasPrefix(dir, d))
+			if !owns {
+				continue
+			}
+			if len(d) > bestLen || (len(d) == bestLen && m.Placed() && !best.Placed()) {
+				best, bestLen = m, len(d)
+			}
+		}
+	}
+	return best
 }

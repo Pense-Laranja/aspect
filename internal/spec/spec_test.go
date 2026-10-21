@@ -528,6 +528,13 @@ modules:
 		t.Fatalf("a brief outside the repository must fail loading, got %v", err)
 	}
 
+	// .git is inside the repository but holds no brief, and its config can
+	// hold a CI job's token.
+	write("_aspect/modules/order.yaml", module("../../.git/config"))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "under .git") {
+		t.Fatalf("a brief under .git must fail loading, got %v", err)
+	}
+
 	if err := os.Symlink(filepath.Join(outside, "secret.md"), filepath.Join(repo, "pkg", "order", "LINK.md")); err != nil {
 		t.Skip("symbolic links unavailable:", err)
 	}

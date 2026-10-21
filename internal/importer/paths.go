@@ -44,7 +44,7 @@ func RecoverPaths(s *spec.Spec, root string) (paths map[string]string, problems 
 		if len(missing) == 0 {
 			continue
 		}
-		dir := filepath.Join(root, t.Name)
+		dir := filepath.Join(root, t.CodeDir())
 		inv, err := analyze.Go(dir, analyze.Options{Exclude: exclude})
 		if err != nil {
 			return nil, nil, fmt.Errorf("paths: %w", err)

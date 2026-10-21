@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/eideroliveira/aspect/internal/spec"
@@ -34,7 +35,7 @@ func TestModulesFor(t *testing.T) {
 	if !slices.Equal(names, []string{"orders", "root"}) {
 		t.Errorf("names = %v", names)
 	}
-	if len(unowned) != 3 {
+	if len(unowned) != 3 || unowned[0] != in("pkg/orders/sub") || unowned[1] != "nosuch" || !strings.Contains(unowned[2], "(outside the repository") {
 		t.Errorf("unowned = %v (want the subpackage, the unknown name and the outside directory)", unowned)
 	}
 }

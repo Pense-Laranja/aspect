@@ -49,7 +49,7 @@ func load(t *testing.T) *spec.Spec {
 }
 
 func TestRenderPutsTheRulesFirst(t *testing.T) {
-	out := Render(load(t), []string{"payments", "unknown", "payments"}, Options{System: true, Briefs: true})
+	out := Render(load(t), []string{"payments", "unknown", "payments"}, Options{})
 	for _, want := range []string{
 		"## System constraints", "- Money is integer cents.",
 		"## Module payments (modules/payments)", "Intent: Charge money for an order through one gateway.",
@@ -76,8 +76,8 @@ func TestRenderPutsTheRulesFirst(t *testing.T) {
 
 func TestRenderFitsTheBudgetAndSaysWhatItLeftOut(t *testing.T) {
 	s := load(t)
-	full := Render(s, []string{"payments", "store"}, Options{System: true, Briefs: true})
-	out := Render(s, []string{"payments", "store"}, Options{System: true, Briefs: true, Budget: 600})
+	full := Render(s, []string{"payments", "store"}, Options{})
+	out := Render(s, []string{"payments", "store"}, Options{Budget: 600})
 	if len(out) > 600*CharsPerToken {
 		t.Fatalf("rendering of %d chars exceeds the budget", len(out))
 	}
@@ -95,14 +95,36 @@ func TestRenderFitsTheBudgetAndSaysWhatItLeftOut(t *testing.T) {
 		t.Errorf("payments' scenarios belong under payments:\n%s", out)
 	}
 
-	tiny := Render(s, []string{"payments"}, Options{Budget: 120})
+	tiny := Render(s, []string{"payments"}, Options{Budget: 140, OmitSystem: true})
 	if !strings.Contains(tiny, "[cut to fit the size limit]") || !strings.Contains(tiny, "the rest of the rules of payments") {
 		t.Errorf("rules that do not fit are cut, not dropped:\n%s", tiny)
 	}
 }
 
 func TestRenderNothing(t *testing.T) {
-	if out := Render(load(t), []string{"unknown"}, Options{}); out != "" {
+	if out := Render(load(t), []string{"unknown"}, Options{OmitSystem: true}); out != "" {
 		t.Errorf("want nothing, got %q", out)
+	}
+}
+
+// A module whose rules did not fit shows nothing else, or its scenarios
+// would print under the previous module's heading.
+func TestRenderDropsAllOfAModuleWhoseRulesDoNotFit(t *testing.T) {
+	s := load(t)
+	s.Module("store").Scenarios = []spec.Scenario{{ID: "S9", When: "w", Then: "t"}}
+	pay := len(core(s, s.Module("payments")))
+	// Room for payments' rules, then less than minCutRoom left.
+	budget := (pay + omittedNoteReserve + minCutRoom/2) / CharsPerToken
+	out := Render(s, []string{"payments", "store"}, Options{Budget: budget, OmitSystem: true})
+	if !strings.Contains(out, "One writer at a time.") {
+		t.Fatalf("payments' rules fit:\n%s", out)
+	}
+	if strings.Contains(out, "S9") {
+		t.Errorf("store's scenarios shown without its rules:\n%s", out)
+	}
+	for _, want := range []string{"the rules of store", "scenarios of store"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the note must name %q:\n%s", want, out)
+		}
 	}
 }

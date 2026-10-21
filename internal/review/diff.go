@@ -24,7 +24,8 @@ import (
 // for text that is not ASCII.
 
 // charsPerToken: code and diffs average 3.5-4 characters per token; 3 errs
-// toward smaller parts.
+// toward smaller parts. speccontext.CharsPerToken is the same estimate, so
+// CODE_REVIEWER_SPEC_BUDGET counts tokens as the prompt budget does.
 const charsPerToken = 3.0
 
 // minifiedAvgLine: a text file whose added lines average this long is
