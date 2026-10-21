@@ -38,7 +38,10 @@ modules:
   - {name: done, path: pkg/done, intent: a, goals: [G1], brief: ../pkg/done/ASPECT.md}
   - {name: nodoc, path: pkg/nodoc, intent: a, goals: [G1], brief: briefs/nodoc.md}
   - {name: unplaced, intent: a, goals: [G1], brief: briefs/unplaced.md}
+  - {name: empty, path: pkg/empty, intent: a, goals: [G1], brief: briefs/empty.md}
 `,
+		"_aspect/briefs/empty.md":    copyOf("ASPECT.md", "x"),
+		"pkg/empty/ASPECT.md":        "  \n",
 		"_aspect/briefs/fresh.md":    copyOf("ASPECT.md", "fresh rules", "README.md", "usage"),
 		"_aspect/briefs/stale.md":    copyOf("ASPECT.md", "old rules"),
 		"_aspect/briefs/own.md":      "Written by the owner.",
@@ -63,7 +66,24 @@ modules:
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An ASPECT.md the loader would refuse (a link out of the repository) is
+	// never proposed: writing it would leave a spec that does not load.
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(repo, "pkg", "own", "sub")
+	if err := os.MkdirAll(linked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if os.Symlink(outside, filepath.Join(linked, "ASPECT.md")) == nil {
+		s.Modules = append(s.Modules, spec.Module{Name: "linked", Path: "pkg/own/sub", Intent: "a"})
+	}
 	moves, notes := InPlaceBriefs(s)
+	if slices.ContainsFunc(moves, func(mv BriefMove) bool { return mv.Module == "linked" }) {
+		t.Error("a package document the loader refuses is not proposed")
+	}
+	notes = slices.DeleteFunc(notes, func(n string) bool { return strings.HasPrefix(n, "linked: ") && strings.Contains(n, "symbolic link") })
 	got := map[string]BriefMove{}
 	for _, mv := range moves {
 		got[mv.Module] = mv
@@ -80,10 +100,10 @@ modules:
 	if mv := got["none"]; mv.From != "" || mv.To != "../pkg/none/ASPECT.md" {
 		t.Errorf("none = %+v", mv)
 	}
-	if len(notes) != 3 {
-		t.Errorf("want notes for own, nodoc and unplaced, got %q", notes)
+	if len(notes) != 4 {
+		t.Errorf("want notes for own, nodoc, unplaced and empty, got %q", notes)
 	}
-	for _, want := range []string{"own: keeps its brief", "nodoc: pkg/nodoc/ASPECT.md does not exist", "unplaced: has no path:"} {
+	for _, want := range []string{"own: keeps its brief", "nodoc: pkg/nodoc/ASPECT.md does not exist", "unplaced: has no path:", "empty: pkg/empty/ASPECT.md is empty"} {
 		if !slices.ContainsFunc(notes, func(n string) bool { return strings.HasPrefix(n, want) }) {
 			t.Errorf("no note %q in %q", want, notes)
 		}

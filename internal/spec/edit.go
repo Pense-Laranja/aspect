@@ -102,7 +102,7 @@ func SetModuleBriefs(specPath string, briefs map[string]string) ([]string, error
 	rootDir := filepath.Dir(specPath)
 	type edit struct {
 		line    int  // 1-based
-		col     int  // 1-based column the value starts at (replace)
+		col     int  // 1-based column the `brief:` key starts at (replace)
 		replace bool // replace the value on line from col, else insert after line
 		text    string
 	}
@@ -133,7 +133,9 @@ func SetModuleBriefs(specPath string, briefs map[string]string) ([]string, error
 			if val.LineComment != "" {
 				v += " " + val.LineComment
 			}
-			edits[file] = append(edits[file], edit{line: val.Line, col: val.Column, replace: true, text: v})
+			// From the key, not the value: an empty `brief:` has its value
+			// right after the colon, with no space to keep.
+			edits[file] = append(edits[file], edit{line: k.Line, col: k.Column, replace: true, text: "brief: " + v})
 			continue
 		}
 		edits[file] = append(edits[file], edit{line: nameKey.Line, text: strings.Repeat(" ", nameKey.Column-1) + "brief: " + v})

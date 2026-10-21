@@ -534,6 +534,11 @@ modules:
 	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "under .git") {
 		t.Fatalf("a brief under .git must fail loading, got %v", err)
 	}
+	// On a case-insensitive file system .GIT is .git.
+	write("_aspect/modules/order.yaml", module("../../.GIT/config"))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "under .git") {
+		t.Fatalf("a brief under .GIT must fail loading, got %v", err)
+	}
 
 	if err := os.Symlink(filepath.Join(outside, "secret.md"), filepath.Join(repo, "pkg", "order", "LINK.md")); err != nil {
 		t.Skip("symbolic links unavailable:", err)

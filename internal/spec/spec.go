@@ -9,6 +9,7 @@ package spec
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -551,32 +552,58 @@ func (s *Spec) BriefFile(p string) (string, error) {
 	if s.Root == "" {
 		return file, nil
 	}
-	resolved, err := filepath.EvalSymlinks(file)
-	if err != nil {
-		return file, nil
-	}
-	root, err := filepath.EvalSymlinks(s.Root)
-	if err != nil {
-		root = s.Root
-	}
-	abs, err := filepath.Abs(resolved)
-	if err != nil || !Inside(root, abs) {
-		return "", fmt.Errorf("%q resolves outside the repository %s through a symbolic link", p, s.Root)
-	}
-	if underGit(root, abs) {
-		return "", fmt.Errorf("%q resolves under .git through a symbolic link; .git holds no brief and may hold credentials", p)
+	if err := inRepository(s.Root, file); err != nil {
+		return "", fmt.Errorf("%q %v", p, err)
 	}
 	return file, nil
 }
 
-// underGit reports whether path, inside root, is in a .git directory.
+// inRepository checks that file (absolute or relative to the working
+// directory) is inside the repository at root and not under its .git, as
+// written and once symbolic links are resolved. Everything the loader reads
+// (the fragments a spec includes, its briefs) goes through it: what it reads
+// is sent to a model by `aspect review`, so a spec under review must not be
+// able to name the reviewer's own files, nor .git/config, which can hold a
+// CI job's token. A file that does not exist yet passes the second check (the
+// read then reports it).
+func inRepository(root, file string) error {
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		return err
+	}
+	if !Inside(root, abs) {
+		return fmt.Errorf("must stay inside the repository %s", root)
+	}
+	if underGit(root, abs) {
+		return errors.New("is under .git, which holds no spec or brief and may hold credentials")
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		realRoot = root
+	}
+	if !Inside(realRoot, resolved) {
+		return fmt.Errorf("resolves outside the repository %s through a symbolic link", root)
+	}
+	if underGit(realRoot, resolved) {
+		return errors.New("resolves under .git through a symbolic link; .git holds no spec or brief and may hold credentials")
+	}
+	return nil
+}
+
+// underGit reports whether path, inside root, is in a .git directory. The
+// name is compared without regard to case: on a case-insensitive file
+// system .GIT is .git.
 func underGit(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false
 	}
 	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
-		if seg == ".git" {
+		if strings.EqualFold(seg, ".git") {
 			return true
 		}
 	}

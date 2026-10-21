@@ -772,7 +772,12 @@ may include further files. Names sort, so `10_catalog.yaml` comes before
 `20_api.yaml` and dependency order inside a directory is under your
 control. `brief` and dependency `spec` paths written inside an included
 file are relative to that file and are rebased automatically. Cycles and
-missing files fail the load. `aspect expand spec.yaml` prints the
+missing files fail the load, and so does an included file outside the
+repository that holds the spec or under its `.git`, as written or through a
+symbolic link: `aspect review` sends the spec's text to a model, so a spec
+under review must not be able to name anyone's other files. (Dependency
+`spec` paths are not held to this: another system's spec may live elsewhere,
+and it is never put in a prompt.) `aspect expand spec.yaml` prints the
 assembled document, which is what the loader validates, so unknown keys
 in fragments are still caught. See
 [examples/modular_shop](https://github.com/eideroliveira/aspect/blob/main/examples/modular_shop/aspect.yaml).

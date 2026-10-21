@@ -92,6 +92,14 @@ func InPlaceBriefs(s *spec.Spec) (moves []BriefMove, notes []string) {
 				continue
 			}
 			to := filepath.ToSlash(rel)
+			if _, err := s.BriefFile(to); err != nil {
+				notes = append(notes, m.Name+": "+err.Error()+"; its brief stays")
+				continue
+			}
+			if strings.TrimSpace(string(text)) == "" {
+				notes = append(notes, m.Name+": "+filepath.ToSlash(filepath.Join(m.Path, PackageBrief))+" is empty; its brief stays")
+				continue
+			}
 			if m.Brief.Path != "" && filepath.Clean(filepath.FromSlash(m.Brief.Path)) == filepath.Clean(rel) {
 				continue
 			}
