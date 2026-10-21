@@ -201,7 +201,11 @@ jobs:
               --output-format json \
               > "$transcript" || show_failure "$?"
           fi
-          ./aspect gate extract -o "$out" "$transcript" || echo "::warning::$AGENT printed no report"
+          # Normalized as aspect review does: a category the model invented
+          # maps to the nearest one rather than invalidating the report.
+          ./aspect gate extract -o "$out" -agent "$AGENT" -mode "$MODE" \
+            -base "$(jq -r .base "$dir/plan.json")" -head "$(jq -r .head "$dir/plan.json")" \
+            "$transcript" || echo "::warning::$AGENT printed no report"
           rm -rf .review/scratch
       - uses: actions/upload-artifact@v4
         if: always()

@@ -105,7 +105,8 @@ jobs:
             --allowedTools "${ALLOWED_TOOLS//, /,}" \
             --output-format json \
             > "$dir/spec-keeper.transcript.json" || echo "::warning::spec-keeper exited with $?"
-          ./aspect gate extract -o "$out" "$dir/spec-keeper.transcript.json" || echo "::warning::spec-keeper printed no report"
+          ./aspect gate extract -o "$out" -agent spec-keeper -mode author -base "$base" -head "$HEAD_SHA" \
+            "$dir/spec-keeper.transcript.json" || echo "::warning::spec-keeper printed no report"
           echo "dir=$dir" >> "$GITHUB_OUTPUT"
           echo "spec=$spec" >> "$GITHUB_OUTPUT"
       - name: Collect the spec edits
