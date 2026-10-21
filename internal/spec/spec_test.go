@@ -461,8 +461,79 @@ modules:
 		t.Fatalf("want not-loaded warnings, got:\n%s", text)
 	}
 	mem.Modules[0].Brief.Path = "../escape.md"
-	if text := join(Validate(mem)); !strings.Contains(text, "must be a relative path inside") {
+	if text := join(Validate(mem)); !strings.Contains(text, "must stay inside the spec's directory") {
 		t.Fatalf("want path escape error, got:\n%s", text)
+	}
+}
+
+// A brief may be a document anywhere in the repository (a package's own
+// CLAUDE.md), so it is read in place rather than copied beside the spec, but
+// never a file outside the repository, directly or through a link.
+func TestBriefsInsideTheRepository(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.md"), []byte("not for a model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	for _, d := range []string{".git", "_aspect/modules", "pkg/order"} {
+		if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "pkg", "order", "CLAUDE.md"), []byte("Orders are never deleted."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("_aspect/aspect.yaml", `
+aspect: 1
+system:
+  name: g
+  intent: shop
+  module_path: example.com/g
+  goals: [{id: G1, statement: x}]
+modules:
+  - dir: modules/
+`)
+	module := func(brief string) string {
+		return "name: order\npath: pkg/order\nintent: orders\ngoals: [G1]\nbrief: " + brief + "\nscenarios: [{id: S1, when: a, then: b}]\n"
+	}
+	// Written in an included fragment, the path is relative to the fragment.
+	write("_aspect/modules/order.yaml", module("../../pkg/order/CLAUDE.md"))
+	s, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := s.Module("order")
+	if m.Brief.Path != "../pkg/order/CLAUDE.md" || m.Brief.Text != "Orders are never deleted." {
+		t.Fatalf("brief = %q %q", m.Brief.Path, m.Brief.Text)
+	}
+	if issues := Validate(s); issues.HasErrors() {
+		t.Fatalf("a brief inside the repository must validate: %v", issues)
+	}
+	if want, _ := filepath.EvalSymlinks(repo); s.Root != repo && s.Root != want {
+		t.Fatalf("root = %q, want %q", s.Root, repo)
+	}
+
+	rel, err := filepath.Rel(filepath.Join(repo, "_aspect", "modules"), filepath.Join(outside, "secret.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("_aspect/modules/order.yaml", module(filepath.ToSlash(rel)))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "must stay inside the repository") {
+		t.Fatalf("a brief outside the repository must fail loading, got %v", err)
+	}
+
+	if err := os.Symlink(filepath.Join(outside, "secret.md"), filepath.Join(repo, "pkg", "order", "LINK.md")); err != nil {
+		t.Skip("symbolic links unavailable:", err)
+	}
+	write("_aspect/modules/order.yaml", module("../../pkg/order/LINK.md"))
+	if _, err := Load(filepath.Join(repo, "_aspect", "aspect.yaml")); err == nil || !strings.Contains(err.Error(), "through a symbolic link") {
+		t.Fatalf("a link out of the repository must fail loading, got %v", err)
 	}
 }
 

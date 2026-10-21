@@ -64,7 +64,7 @@ func TestSplitExamplesRoundTrip(t *testing.T) {
 					t.Errorf("module %s: no %s in %v", m.Name, p, l.Paths())
 				}
 			}
-			got.Dir, got.Path, got.Deps, got.Sources = "", "", nil, nil
+			got.Dir, got.Path, got.Root, got.Deps, got.Sources = "", "", "", nil, nil
 			normalize(want)
 			normalize(got)
 			if !reflect.DeepEqual(want, got) {

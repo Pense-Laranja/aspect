@@ -179,8 +179,8 @@ func validateBriefs(c *collector, s *Spec) {
 		if b.Path == "" {
 			continue
 		}
-		if filepath.IsAbs(b.Path) || strings.HasPrefix(filepath.Clean(b.Path), "..") {
-			c.add(Error, owner+".brief", "%q must be a relative path inside the spec's directory", b.Path)
+		if err := s.checkBriefPath(b.Path); err != nil {
+			c.add(Error, owner+".brief", "%v", err)
 			continue
 		}
 		if strings.TrimSpace(b.Text) == "" {

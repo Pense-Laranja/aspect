@@ -35,6 +35,12 @@ Usage:
   aspect run      <spec.yaml> [flags]  generate code and tests, run them, validate goals
   aspect drift    <spec.yaml> [flags]  re-validate existing code against the spec without regenerating
   aspect paths    <spec.yaml> [flags]  record each imported module's package directory (path:) in the spec
+  aspect briefs   <spec.yaml> [-w]     read each module's brief from its package's CLAUDE.md in place
+                                       instead of an import copy beside the spec
+  aspect context  <spec.yaml> [flags] <path|module>...
+                                       what the spec says about the modules owning these files: the
+                                       system's constraints, each module's rules, operations,
+                                       scenarios and brief (what aspect review shows its reviewers)
   aspect inventory <dir> [flags]       deterministic inventory of an existing Go codebase (no model calls)
   aspect import   <dir> [flags]        recover a spec from an existing Go codebase
   aspect check-invariants <dir> [flags] deterministic verification of code and architectural invariants
@@ -77,6 +83,13 @@ Paths flags (for specs imported before modules recorded their directory):
   -repo DIR         the repository the spec was imported from (default .)
   -w                write path: into the spec files; without it, print what would be written
 
+Context flags (before the paths):
+  -repo DIR         the repository the paths are in (default: the spec's, the nearest .git above it)
+  -budget N         print at most about N tokens, rules first (default 0: everything)
+  -system=false     leave out the system's constraints
+  -briefs=false     leave out the modules' briefs
+  A directory stands for the files directly in it. Exit 1 when no argument names a module.
+
 Inventory and import flags:
   -include a,b      only these package directories (prefix match)
   -exclude a,b      skip these package directories (external, vendor, testdata are always skipped)
@@ -116,6 +129,8 @@ Review flags:
   -publish          publish the result with the repository's .claude/review/publish.sh
   -force            review again even if a run of the same diff exists
   -o FILE           also write the Markdown result to FILE
+  Each reviewer is shown the system's constraints and the rules of the modules its files
+  belong to (see aspect context), within CODE_REVIEWER_SPEC_BUDGET tokens (30000; 0: none).
   The run is .review/<run-id>/: plan.json, the reports, status.json. Gemini credentials
   come from GEMINI_API_KEY or GOOGLE_API_KEY; GEMINI_MODEL and the CODE_REVIEWER_*
   variables tune it (see internal/review/config.go). ASPECT_HOME supplies the agents
@@ -153,6 +168,10 @@ func main() {
 		err = runDrift(path, os.Args[3:])
 	case "paths":
 		err = runPaths(path, os.Args[3:])
+	case "briefs":
+		err = runBriefs(path, os.Args[3:])
+	case "context":
+		err = runContext(path, os.Args[3:])
 	case "inventory":
 		err = runInventory(path, os.Args[3:])
 	case "import":

@@ -46,6 +46,7 @@ type fakeModel struct {
 	mu      sync.Mutex
 	answers map[string]any
 	calls   []string
+	prompts map[string]string  // the last prompt each agent was sent
 	before  func(agent string) // runs as a request starts
 }
 
@@ -53,6 +54,10 @@ func (f *fakeModel) Complete(ctx context.Context, req llm.Request) (llm.Response
 	agent := roleOf(req.Prompt)
 	f.mu.Lock()
 	f.calls = append(f.calls, agent)
+	if f.prompts == nil {
+		f.prompts = map[string]string{}
+	}
+	f.prompts[agent] = req.Prompt
 	answer := f.answers[agent]
 	before := f.before
 	f.mu.Unlock()
@@ -698,5 +703,61 @@ func TestCompareShowsAnAgentMissingFromOneRun(t *testing.T) {
 	}
 	if lines["i18n"] != "failed 0 (0 blk)" {
 		t.Errorf("an agent that failed in run A: %q", lines["i18n"])
+	}
+}
+
+// Reviewers have no tools, so the rules the spec states about the code a
+// change touches are put in their prompt: the system's constraints, the
+// module's invariants and its brief (here the package's CLAUDE.md, read in
+// place). A zero budget shows none.
+func TestReviewersAreShownTheTouchedModulesSpec(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), `
+aspect: 1
+system:
+  name: g
+  intent: greet
+  module_path: example.com/g
+  constraints: [No float money.]
+  goals: [{id: G1, statement: Greets everyone.}]
+modules:
+  - name: root
+    path: .
+    intent: the package
+    goals: [G1]
+    brief: ../CLAUDE.md
+    invariants: [A() never panics.]
+  - name: other
+    path: other
+    intent: untouched
+    goals: [G1]
+    invariants: [Other rule.]
+`)
+	writeFile(t, filepath.Join(repo, "CLAUDE.md"), "Keep A tiny.\n")
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "spec")
+
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	te.Config.SpecBudget = 30000
+	te.run(t, Options{Head: "feature"})
+	prompt := te.model.prompts["red-team"]
+	for _, want := range []string{"### Specification of the touched modules (_aspect/aspect.yaml)", "No float money.", "[0] A() never panics.", "Keep A tiny.", "### Brief (CLAUDE.md)"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, prompt)
+		}
+	}
+	i, j := strings.Index(prompt, "### Specification"), strings.Index(prompt, "### Code diff")
+	if i < 0 || i > j {
+		t.Fatal("the spec comes before the diff")
+	}
+	// (The diff itself carries the whole spec file, which this change adds.)
+	if strings.Contains(prompt[i:j], "Other rule.") {
+		t.Error("a module the change does not touch is not shown")
+	}
+
+	off := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	off.run(t, Options{Head: "feature", Force: true})
+	if p := off.model.prompts["red-team"]; strings.Contains(p, "### Specification") {
+		t.Error("a zero spec budget shows no spec")
 	}
 }

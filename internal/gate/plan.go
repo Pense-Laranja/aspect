@@ -3,9 +3,11 @@ package gate
 import (
 	"fmt"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/eideroliveira/aspect/internal/lang"
 	"github.com/eideroliveira/aspect/internal/spec"
 )
 
@@ -26,14 +28,18 @@ type Change struct {
 }
 
 // ModuleContext carries the spec metadata for one module touched by the changes:
-// its intent, goals, owned entities, and invariants that must be preserved.
+// its intent, goals, owned entities, the invariants that must be preserved
+// and the module's own constraints, and where its brief is.
 type ModuleContext struct {
-	Name       string           `json:"name"`
-	Intent     string           `json:"intent,omitempty"`
-	Goals      []string         `json:"goals,omitempty"`
-	Entities   []string         `json:"entities,omitempty"`
-	Invariants []spec.Invariant `json:"invariants,omitempty"`
-	Files      []string         `json:"files,omitempty"`
+	Name        string           `json:"name"`
+	Intent      string           `json:"intent,omitempty"`
+	Goals       []string         `json:"goals,omitempty"`
+	Entities    []string         `json:"entities,omitempty"`
+	Invariants  []spec.Invariant `json:"invariants,omitempty"`
+	Constraints []string         `json:"constraints,omitempty"`
+	// Brief is the module's brief, relative to the repository.
+	Brief string   `json:"brief,omitempty"`
+	Files []string `json:"files,omitempty"`
 }
 
 // Plan is the list of agents that apply to a change. It is written next to
@@ -61,8 +67,10 @@ type Planned struct {
 // BuildPlan decides which gates apply to the changes, in the order
 // gates.yaml lists them. A gate applies when at least one changed file
 // matches its paths and its When condition, if any, holds. spec is the
-// entry point Config.ResolveSpec chose, or NoSpec.
-func BuildPlan(c *Config, base, head string, changes []Change, specPath string) *Plan {
+// entry point Config.ResolveSpec chose, or NoSpec, relative to repo (the
+// repository the changes' paths are relative to; "" is the working
+// directory). The spec is read from repo's working tree.
+func BuildPlan(c *Config, repo, base, head string, changes []Change, specPath string) *Plan {
 	p := &Plan{Schema: PlanSchema, Spec: specPath, Base: base, Head: head, ChangedFiles: len(changes), Agents: []Planned{}}
 	for _, ch := range changes {
 		p.ChangedLines += ch.Added + ch.Deleted
@@ -100,25 +108,8 @@ func BuildPlan(c *Config, base, head string, changes []Change, specPath string) 
 	}
 
 	if specPath != NoSpec && specPath != "" {
-		if sp, err := spec.Load(specPath); err == nil && sp != nil {
-			for _, m := range sp.AllModules() {
-				var modFiles []string
-				for _, ch := range changes {
-					if matchModule(m, ch.Path) {
-						modFiles = append(modFiles, ch.Path)
-					}
-				}
-				if len(modFiles) > 0 {
-					p.Modules = append(p.Modules, ModuleContext{
-						Name:       m.Name,
-						Intent:     m.Intent,
-						Goals:      m.Goals,
-						Entities:   m.Entities,
-						Invariants: m.Invariants,
-						Files:      modFiles,
-					})
-				}
-			}
+		if sp, err := spec.Load(filepath.Join(repo, filepath.FromSlash(specPath))); err == nil && sp != nil {
+			p.Modules = moduleContexts(sp, repo, changes)
 			for i := range p.Agents {
 				var agentMods []string
 				for _, mc := range p.Modules {
@@ -134,7 +125,76 @@ func BuildPlan(c *Config, base, head string, changes []Change, specPath string) 
 	return p
 }
 
-func matchModule(m *spec.Module, filePath string) bool {
+// moduleContexts lists the modules the changes touch, in spec order. A file
+// belongs to a module when the module owns it as code (see lang.ModuleOf),
+// or when it is the module's brief or the fragment the module is written in:
+// a change to the rules a module is judged by is a change to the module. The
+// root spec file is no module's: it holds the system and, in a single-file
+// spec, every module, so any edit to it would touch them all.
+func moduleContexts(sp *spec.Spec, repo string, changes []Change) []ModuleContext {
+	repoAbs, _ := filepath.Abs(repo)
+	rel := func(file string) string {
+		if file == "" {
+			return ""
+		}
+		abs, err := filepath.Abs(file)
+		if err != nil {
+			return ""
+		}
+		r, err := filepath.Rel(repoAbs, abs)
+		if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+			return ""
+		}
+		return filepath.ToSlash(r)
+	}
+	owner := map[string]string{}
+	for _, ch := range changes {
+		if _, m := lang.ModuleOf(sp, ch.Path); m != nil {
+			owner[ch.Path] = m.Name
+		}
+	}
+	var out []ModuleContext
+	for _, m := range sp.AllModules() {
+		brief := ""
+		if m.Brief.Path != "" {
+			brief = rel(filepath.Join(sp.Dir, filepath.FromSlash(m.Brief.Path)))
+		}
+		specFile := rel(sp.Sources.ModuleFile(m.Name))
+		if specFile == rel(sp.Path) {
+			specFile = ""
+		}
+		var files []string
+		for _, ch := range changes {
+			switch {
+			case owner[ch.Path] == m.Name,
+				ch.Path == brief || ch.Path == specFile,
+				owner[ch.Path] == "" && !m.Placed() && legacyMatch(m, ch.Path):
+				files = append(files, ch.Path)
+			}
+		}
+		if len(files) == 0 {
+			continue
+		}
+		out = append(out, ModuleContext{
+			Name:        m.Name,
+			Intent:      m.Intent,
+			Goals:       m.Goals,
+			Entities:    m.Entities,
+			Invariants:  m.Invariants,
+			Constraints: m.Constraints,
+			Brief:       brief,
+			Files:       files,
+		})
+	}
+	return out
+}
+
+// legacyMatch guesses a file's module for a spec imported before modules
+// recorded their directory (path:), where a package directory had become a
+// module name: modules/api is the module modules_api. `aspect paths` records
+// the real directory; until then this keeps such specs' plans populated. A
+// file another module owns is never given to a module by guess.
+func legacyMatch(m *spec.Module, filePath string) bool {
 	dir1 := m.Name + "/"
 	dir2 := strings.ReplaceAll(m.Name, "_", "/") + "/"
 	base := path.Base(filePath)

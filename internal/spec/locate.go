@@ -114,3 +114,17 @@ func namedEntry(root *yaml.Node, list, name string, inTiers bool) *yaml.Node {
 	}
 	return nil
 }
+
+// ModuleFile is the file module name is written in (the root spec or an
+// included fragment), as the loader opened it; "" when the spec was not
+// loaded from disk or has no such module.
+func (src *Sources) ModuleFile(name string) string {
+	if src == nil || src.root == nil {
+		return ""
+	}
+	n := namedEntry(src.root, "modules", name, true)
+	if n == nil {
+		return ""
+	}
+	return src.files[n]
+}

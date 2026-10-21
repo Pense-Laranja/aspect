@@ -52,6 +52,12 @@ type Config struct {
 	// PromptBudget is the prompt size limit in tokens; a larger diff is
 	// reviewed in parts (CODE_REVIEWER_GEMINI_PROMPT_BUDGET, 800000).
 	PromptBudget int
+	// SpecBudget bounds, in tokens, what each reviewer is shown of the spec:
+	// the system's constraints and the touched modules' rules, operations,
+	// scenarios and briefs, in that order of priority
+	// (CODE_REVIEWER_SPEC_BUDGET, 30000; 0 shows none). Reviewers have no
+	// tools, so without it a rule written in the spec never reaches them.
+	SpecBudget int
 	// AspectHome, an aspect checkout, supplies the agent definitions and
 	// gates.yaml a repository lacks (ASPECT_HOME).
 	AspectHome string
@@ -79,6 +85,7 @@ func ConfigFromEnv() Config {
 		BlockFinalNoThinking: envBool("CODE_REVIEWER_GEMINI_BLOCK_NO_THINKING", true),
 		MaxConcurrency:       envInt("CODE_REVIEWER_GEMINI_MAX_CONCURRENCY", 4),
 		PromptBudget:         envInt("CODE_REVIEWER_GEMINI_PROMPT_BUDGET", 800000),
+		SpecBudget:           envInt("CODE_REVIEWER_SPEC_BUDGET", 30000),
 		AspectHome:           os.Getenv("ASPECT_HOME"),
 	}
 }

@@ -49,6 +49,11 @@ type Spec struct {
 	Dir string `yaml:"-" json:"-"`
 	// Path is the file the spec was loaded from.
 	Path string `yaml:"-" json:"-"`
+	// Root is the repository the spec belongs to: the nearest directory at
+	// or above Dir that holds .git, else Dir itself. Brief paths may lead
+	// anywhere inside it and nowhere outside. Absolute; empty for specs
+	// parsed from memory.
+	Root string `yaml:"-" json:"-"`
 	// Deps holds the loaded specs of System.Dependencies, by name.
 	Deps map[string]*Spec `yaml:"-" json:"-"`
 	// Sources maps the loaded YAML back to the files it was written in;
@@ -67,11 +72,16 @@ type Dependency struct {
 }
 
 // Brief is a sidecar document: a longer, free-form description of what a
-// system, tier or module must be, kept in its own file next to the spec so
-// it can run to pages without crowding the YAML. Every agent working on the
-// owner sees the whole text.
+// system, tier or module must be, kept in its own file so it can run to
+// pages without crowding the YAML. Every agent working on the owner sees the
+// whole text. The file may be anywhere in the repository that holds the
+// spec, so a package's own CLAUDE.md or README.md can be its module's brief
+// in place, read by people, coding assistants and the agents alike, instead
+// of a copy beside the spec that drifts from it.
 type Brief struct {
-	// Path is relative to the spec file's directory.
+	// Path is relative to the spec file's directory. It may climb out of
+	// that directory (../modules/order/CLAUDE.md) but not out of the
+	// repository (Spec.Root).
 	Path string `yaml:"brief,omitempty" json:"brief,omitempty"`
 	// Text is the file's content, filled by Load.
 	Text string `yaml:"-" json:"-"`
@@ -445,6 +455,9 @@ func load(path string, loading map[string]bool) (*Spec, error) {
 	s.Dir = filepath.Dir(path)
 	s.Path = path
 	s.Sources = src
+	if s.Root, err = RepositoryRoot(s.Dir); err != nil {
+		return nil, err
+	}
 	if err := s.LoadBriefs(); err != nil {
 		return nil, err
 	}
@@ -497,15 +510,22 @@ func (s *Spec) Briefs() map[string]*Brief {
 	return out
 }
 
-// LoadBriefs reads every brief file relative to Dir. Missing files are
-// reported together so the user fixes them in one pass.
+// LoadBriefs reads every brief file relative to Dir. Missing files, and
+// paths that lead out of the repository, are reported together so the user
+// fixes them in one pass; a file outside the repository is never read, since
+// a brief's text is sent to a model.
 func (s *Spec) LoadBriefs() error {
 	var missing []string
 	for owner, b := range s.Briefs() {
 		if b.Path == "" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(s.Dir, b.Path))
+		file, err := s.BriefFile(b.Path)
+		if err != nil {
+			missing = append(missing, fmt.Sprintf("%s: %v", owner, err))
+			continue
+		}
+		data, err := os.ReadFile(file)
 		if err != nil {
 			missing = append(missing, fmt.Sprintf("%s: %s (%v)", owner, b.Path, err))
 			continue
@@ -517,6 +537,82 @@ func (s *Spec) LoadBriefs() error {
 		return fmt.Errorf("brief files not found:\n  %s", strings.Join(missing, "\n  "))
 	}
 	return nil
+}
+
+// BriefFile is the file a brief path names, checked to stay inside the
+// repository: lexically, and again once symbolic links are resolved, so a
+// link committed in the repository cannot lead a brief to ~/.ssh. A file that
+// does not exist yet passes the second check (os.ReadFile then reports it).
+func (s *Spec) BriefFile(p string) (string, error) {
+	if err := s.checkBriefPath(p); err != nil {
+		return "", err
+	}
+	file := filepath.Join(s.Dir, filepath.FromSlash(p))
+	if s.Root == "" {
+		return file, nil
+	}
+	resolved, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		return file, nil
+	}
+	root, err := filepath.EvalSymlinks(s.Root)
+	if err != nil {
+		root = s.Root
+	}
+	if abs, err := filepath.Abs(resolved); err != nil || !inside(root, abs) {
+		return "", fmt.Errorf("%q resolves outside the repository %s through a symbolic link", p, s.Root)
+	}
+	return file, nil
+}
+
+// checkBriefPath is the lexical rule: relative, and inside the repository
+// (inside the spec's directory for a spec parsed from memory, which has no
+// repository).
+func (s *Spec) checkBriefPath(p string) error {
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return fmt.Errorf("%q must be a relative path", p)
+	}
+	if s.Root == "" {
+		if c := filepath.Clean(filepath.FromSlash(p)); c == ".." || strings.HasPrefix(c, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("%q must stay inside the spec's directory", p)
+		}
+		return nil
+	}
+	abs, err := filepath.Abs(filepath.Join(s.Dir, filepath.FromSlash(p)))
+	if err != nil {
+		return err
+	}
+	if !inside(s.Root, abs) {
+		return fmt.Errorf("%q must stay inside the repository %s", p, s.Root)
+	}
+	return nil
+}
+
+// inside reports whether path is dir or below it; both are absolute and
+// clean.
+func inside(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// RepositoryRoot is the nearest directory at or above dir that holds a .git
+// entry (a directory, or the file a worktree or submodule has), else dir
+// itself, as an absolute path.
+func RepositoryRoot(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	for d := abs; ; {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return d, nil
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return abs, nil
+		}
+		d = parent
+	}
 }
 
 // Parse decodes YAML into a Spec and applies defaults.

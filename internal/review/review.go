@@ -30,6 +30,8 @@ import (
 	"github.com/eideroliveira/aspect/internal/gate"
 	"github.com/eideroliveira/aspect/internal/gitx"
 	"github.com/eideroliveira/aspect/internal/llm"
+	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/eideroliveira/aspect/internal/speccontext"
 )
 
 // maxDescriptionChars bounds the PR description given as context: past
@@ -182,6 +184,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		}
 		shared = strings.TrimRight("### Pull request\nTitle: "+pr.Title+"\n\n"+body, " \n\t")
 	}
+	specOf := e.specContexts(repo, plan)
 	rv := &reviewer{client: e.Client, engine: e.engineLabel(), model: e.Config.GeminiModel, promptBudget: e.Config.PromptBudget}
 	if e.Config.MaxConcurrency > 0 {
 		rv.slots = make(chan struct{}, e.Config.MaxConcurrency)
@@ -191,7 +194,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.runAgent(ctx, repo, dir, plan, a, diff, shared, rv, st)
+			e.runAgent(ctx, repo, dir, plan, a, diff, shared, specOf(a), rv, st)
 		}()
 	}
 	wg.Wait()
@@ -212,6 +215,33 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	res.Outcome = st.finish(outcome, published)
 	res.Rendered, res.Published = rendered, published
 	return res, nil
+}
+
+// specContexts returns what each planned agent is shown of the spec: the
+// system's constraints and the rules of the modules its files belong to
+// (plan.Agents[i].Modules), within Config.SpecBudget. Reviewers have no
+// tools; this is how a rule written in the spec reaches them. The spec is
+// read from the working tree, as the plan's modules were. With no spec, a
+// spec that does not load, or a zero budget, every agent is shown nothing.
+func (e *Engine) specContexts(repo string, plan *gate.Plan) func(gate.Planned) string {
+	none := func(gate.Planned) string { return "" }
+	if e.Config.SpecBudget <= 0 || plan.Spec == "" || plan.Spec == gate.NoSpec {
+		return none
+	}
+	sp, err := spec.Load(filepath.Join(repo, filepath.FromSlash(plan.Spec)))
+	if err != nil {
+		return none
+	}
+	return func(a gate.Planned) string {
+		text := speccontext.Render(sp, a.Modules, speccontext.Options{Budget: e.Config.SpecBudget, System: true, Briefs: true})
+		if text == "" {
+			return ""
+		}
+		return "### Specification of the touched modules (" + plan.Spec + ")\n" +
+			"What the project's spec says about the code this change touches. A change that breaks a constraint or " +
+			"invariant below is a finding: cite it in spec_ref. This is the spec as the change leaves it; where the " +
+			"diff edits the spec itself, judge that edit too: a rule weakened only so that the code passes is a finding.\n\n" + text
+	}
 }
 
 func (e *Engine) gatesPath(repo string) string {
@@ -248,7 +278,7 @@ func (e *Engine) newRunDir(repo string) (string, string, error) {
 
 // runAgent runs one planned agent and records its report, or its failure.
 func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan, a gate.Planned,
-	diff, shared string, rv *reviewer, st *runStatus) {
+	diff, shared, specContext string, rv *reviewer, st *runStatus) {
 	out := filepath.Join(dir, a.Agent+".json")
 	fail := func(msg string) {
 		// No <agent>.json: `aspect gate check` blocks a gate whose report
@@ -305,6 +335,7 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 		outputFormat:  "Produce your report strictly conforming to the `aspect-review/v1` schema.\n" + reportFormat,
 		diff:          agentDiff,
 		sharedContext: shared,
+		specContext:   specContext,
 		agentContext:  assignment,
 	}
 	raw, u, err := rv.review(ctx, req, hooks{

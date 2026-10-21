@@ -106,7 +106,9 @@ spec is missing, so do not report it again.
    touching the spec breaks the lockstep rule and is `high`; drift with no
    user impact yet is `medium`.
 6. **In author mode**, edit only the spec entry point, files it includes,
-   and briefs, all under the spec's directory. In a split spec, edit the
+   and briefs. A brief may be a package's own document elsewhere in the
+   repository (`brief: ../modules/order/CLAUDE.md`); edit it where it is,
+   never a copy of it. In a split spec, edit the
    module's own fragment, and give a new module a new `modules/<name>.yaml`
    rather than growing the entry point. Keep edits minimal and in the spec's own voice:
    - intent stays the "why", in the owner's words;

@@ -174,7 +174,9 @@ and keeping the backend API as an interface the app consumes.
 Markdown documents found in a package directory (README.md, CLAUDE.md,
 design notes) become `briefs/<module>.md` next to the recovered spec and are
 referenced as the module's brief, so the owner's own rules travel with the
-spec. Assembly is deterministic again, records provenance under `system.source`,
+spec. A brief may be any file in the repository, so once the packages keep
+their own `CLAUDE.md`, `aspect briefs _aspect/aspect.yaml -w` points each
+module at it in place and retires the copies, which otherwise drift. Assembly is deterministic again, records provenance under `system.source`,
 and never fails: whatever it cannot reconcile becomes a warning at the top of
 the YAML. Fragments are cached under `.aspect-cache/`, so an interrupted or
 re-run import only pays for packages not yet described. Review the recovered
@@ -235,6 +237,7 @@ Aspect review gates can be executed via three environments:
    - `aspect review -repo . -base origin/main [-publish]` exits 0 on pass or warn, 1 when the gates block, 2 when there is no verdict.
    - The run is `.review/<run-id>/` (plan, reports, `status.json`), and an unchanged diff reuses its finished run instead of paying for the review again.
    - Credentials come from `GEMINI_API_KEY` or `GOOGLE_API_KEY`; the `CODE_REVIEWER_*` variables tune timeouts, retries, concurrency and the prompt budget (`internal/review/config.go`).
+   - Each reviewer is shown the system's constraints and the rules of the modules its files belong to (constraints, invariants, operations, scenarios, brief), within `CODE_REVIEWER_SPEC_BUDGET` tokens (30000; 0 shows none): a rule written in the spec is checked on every change to its module. `aspect context _aspect/aspect.yaml <file|dir|module>...` prints the same text, for a person or a coding assistant about to edit that code.
    - It replaces CodeReviewer (the Python `aspect-review gates` CLI and MCP server), with the same run files, variables and exit codes.
 2. **Claude Code (Interactive CLI):**
    Runs interactively inside Claude Code via the `/review` command or `.claude/review/run.sh`.

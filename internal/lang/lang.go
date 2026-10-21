@@ -209,3 +209,30 @@ func PascalCase(s string) string {
 	}
 	return b.String()
 }
+
+// ModuleOf returns the module of s that owns file, a slash path relative
+// to the repository the spec describes, and its tier; nil when no module
+// owns it. The layout is the one `aspect drift -repo` checks: a
+// single-tier spec's code is the repository root, a tier's code is
+// <tier>/. A tier whose language has no profile owns nothing.
+func ModuleOf(s *spec.Spec, file string) (*spec.Tier, *spec.Module) {
+	multi := len(s.Tiers) > 0
+	for _, t := range s.EffectiveTiers() {
+		rel := file
+		if multi {
+			prefix := t.Name + "/"
+			if !strings.HasPrefix(file, prefix) {
+				continue
+			}
+			rel = file[len(prefix):]
+		}
+		p, err := For(t.Language)
+		if err != nil {
+			continue
+		}
+		if m := p.Owner(t.ModuleRefs(), rel); m != nil {
+			return t, m
+		}
+	}
+	return nil, nil
+}
