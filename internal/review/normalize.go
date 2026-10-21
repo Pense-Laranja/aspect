@@ -268,7 +268,10 @@ func (r *Report) blockersAndWarnings() (blockers, warnings int) {
 // gate.Severities nor a known alias (guessing info could turn a blocker into
 // a pass), and a non-info finding without a location (which aspect
 // requires; downgrading it to info would do the same).
-func Normalize(raw *Object, run Run) (*Report, error) {
+func Normalize(raw *Object, run AgentRun) (*Report, error) {
+	if err := run.check(); err != nil {
+		return nil, err
+	}
 	agent, mode := run.Agent, run.Mode
 	r := emptyReport(agent, mode, run.Base, run.Head, "")
 	ids := map[string]bool{}
@@ -335,10 +338,19 @@ func Normalize(raw *Object, run Run) (*Report, error) {
 	return r, nil
 }
 
-// Run names the review a report belongs to: the agent that wrote it, the
-// mode it ran in, and the commits it reviewed.
-type Run struct {
+// AgentRun names the part of a review a report belongs to: the agent that
+// wrote it, the mode it ran in, and the commits it reviewed.
+type AgentRun struct {
 	Agent, Mode, Base, Head string
+}
+
+// check reports a run no report can be stamped with: every field set, the
+// mode one of gate.Modes.
+func (run AgentRun) check() error {
+	if run.Agent == "" || run.Base == "" || run.Head == "" || !slices.Contains(gate.Modes, run.Mode) {
+		return fmt.Errorf("normalize: the run needs an agent, a mode (one of %v), a base and a head, got %+v", gate.Modes, run)
+	}
+	return nil
 }
 
 // NormalizeJSON normalizes a report that an agent printed as JSON text, as
@@ -351,15 +363,16 @@ type Run struct {
 // gate check would have rejected:
 //   - no findings list, or findings that are not objects (a truncated or
 //     garbled report could hide a blocker behind an empty one);
-//   - a confidence above 1 (Normalize would read 9 as 9%, below the block
-//     threshold);
+//   - a confidence that is not a number in [0, 1] (Normalize would read 9
+//     as 9%, clamp -0.9 to 0 and guess 0.5 for "95%", each of which can drop
+//     a blocker below the block threshold);
 //   - another schema, agent, mode or revision than the run's (relabelling
 //     would defeat gate check's stale-report rule); a report that leaves
 //     them out, or abbreviates a commit, takes the run's;
 //   - whatever Normalize refuses.
-func NormalizeJSON(data []byte, run Run) ([]byte, error) {
-	if run.Agent == "" || run.Base == "" || run.Head == "" || !slices.Contains(gate.Modes, run.Mode) {
-		return nil, fmt.Errorf("normalize: the run needs an agent, a mode (one of %v), a base and a head, got %+v", gate.Modes, run)
+func NormalizeJSON(data []byte, run AgentRun) ([]byte, error) {
+	if err := run.check(); err != nil {
+		return nil, err
 	}
 	v, err := parseValue(data)
 	if err != nil {
@@ -378,8 +391,12 @@ func NormalizeJSON(data []byte, run Run) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: findings[%d] is not an object", ErrInvalidReport, i)
 		}
-		if c, isNumber := asFloat(f.Get("confidence")); isNumber && c > 1 {
-			return nil, fmt.Errorf("%w: findings[%d] has confidence %v, outside [0, 1]", ErrInvalidReport, i, c)
+		if raw := f.Get("confidence"); raw != nil {
+			_, isNumber := raw.(json.Number)
+			c, ok := asFloat(raw)
+			if !isNumber || !ok || math.IsNaN(c) || c < 0 || c > 1 {
+				return nil, fmt.Errorf("%w: findings[%d] has a confidence that is not a number in [0, 1]", ErrInvalidReport, i)
+			}
 		}
 	}
 	for _, field := range []struct{ key, want string }{{"schema", gate.ReportSchema}, {"agent", run.Agent}, {"mode", run.Mode}} {

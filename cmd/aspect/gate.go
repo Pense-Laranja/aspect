@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -81,13 +82,9 @@ func runGateExtract(args []string) error {
 		return err
 	}
 	if normalize {
-		normalized, err := review.NormalizeJSON(b, review.Run{Agent: *agent, Mode: *mode, Base: *base, Head: *head})
+		normalized, err := review.NormalizeJSON(b, review.AgentRun{Agent: *agent, Mode: *mode, Base: *base, Head: *head})
 		if err != nil {
-			kept := ""
-			if mkErr := os.MkdirAll(filepath.Dir(*out), 0o755); mkErr == nil && os.WriteFile(*out+".rejected", b, 0o644) == nil {
-				kept = "; it is kept in " + *out + ".rejected"
-			}
-			return fmt.Errorf("gate extract: %s's report, not written to %s%s: %w", *agent, *out, kept, err)
+			return refuseReport(*agent, *out, b, err)
 		}
 		b = normalized
 	}
@@ -95,6 +92,27 @@ func runGateExtract(args []string) error {
 		return err
 	}
 	return os.WriteFile(*out, b, 0o644)
+}
+
+// refuseReport keeps a report NormalizeJSON refused, and why, in
+// <out>.rejected, and returns an error that names neither: the reason can
+// quote the model's text (a finding's title), and this error is printed to a
+// CI log that is public on a public pull request. An error that is the
+// run's, not the report's, is returned as it is.
+func refuseReport(agent, out string, report []byte, cause error) error {
+	if !errors.Is(cause, review.ErrInvalidReport) {
+		return fmt.Errorf("gate extract: %w", cause)
+	}
+	rejected := out + ".rejected"
+	body := append([]byte("refused: "+cause.Error()+"\n\n"), report...)
+	err := os.MkdirAll(filepath.Dir(out), 0o755)
+	if err == nil {
+		err = os.WriteFile(rejected, body, 0o644)
+	}
+	if err != nil {
+		return fmt.Errorf("gate extract: %s's report was refused and not written to %s; keeping it in %s failed too: %v", agent, out, rejected, err)
+	}
+	return fmt.Errorf("gate extract: %s's report was refused and not written to %s; the report and the reason are in %s", agent, out, rejected)
 }
 
 func runGatePlan(args []string) error {

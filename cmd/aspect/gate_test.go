@@ -108,17 +108,22 @@ func TestGateExtractTakesTheRunAndRefusesWhatItCannotTrust(t *testing.T) {
 		t.Errorf("the run's values are stamped: %+v", r)
 	}
 	for name, report := range map[string]string{
-		"stale":   `{"head": "ccccccc3", "findings": []}`,
-		"unknown": `{"findings": [{"severity": "weird", "title": "SQL injection", "location": {"file": "a.go", "line": 3}}]}`,
+		"stale":       `{"head": "ccccccc3", "findings": []}`,
+		"unknown":     `{"findings": [{"severity": "weird", "title": "SQL injection", "location": {"file": "a.go", "line": 3}}]}`,
+		"no location": `{"findings": [{"severity": "high", "title": "SQL injection in /login"}]}`,
 	} {
 		out, err := extract(report)
-		if err == nil || !strings.Contains(err.Error(), "security-reviewer's report") {
+		if err == nil || !strings.Contains(err.Error(), "security-reviewer's report was refused") {
 			t.Errorf("%s: want a refusal naming the agent, got %v", name, err)
+		}
+		// The error goes to a public CI log: it never quotes the report.
+		if err != nil && strings.Contains(err.Error(), "SQL injection") {
+			t.Errorf("%s: the error quotes the report: %v", name, err)
 		}
 		if _, statErr := os.Stat(out); statErr == nil {
 			t.Errorf("%s: a refused report must not be written", name)
 		}
-		if kept, readErr := os.ReadFile(out + ".rejected"); readErr != nil || !strings.Contains(string(kept), "findings") {
+		if kept, readErr := os.ReadFile(out + ".rejected"); readErr != nil || !strings.Contains(string(kept), "findings") || !strings.HasPrefix(string(kept), "refused: ") {
 			t.Errorf("%s: the refused report is kept for inspection: %v", name, readErr)
 		}
 		os.Remove(out + ".rejected")
