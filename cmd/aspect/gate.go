@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/eideroliveira/aspect/internal/gate"
 	"github.com/eideroliveira/aspect/internal/gitx"
+	"github.com/eideroliveira/aspect/internal/review"
 )
 
 // runGate dispatches `aspect gate plan|check|render`.
@@ -30,15 +32,28 @@ func runGate(sub string, args []string) error {
 
 // runGateExtract saves the report an agent printed as the last fenced json
 // block of its final message. Input is the --output-format json result of
-// Claude Code or Gemini CLI, or plain text.
+// Claude Code or Gemini CLI, or plain text. Given the run's agent, mode,
+// base and head, it first normalizes the report as `aspect review` does
+// (review.Normalize): a category the model invented (error-handling,
+// maintainability) maps to the nearest one instead of making the report
+// invalid, which blocks a gate that found nothing.
 func runGateExtract(args []string) error {
 	fs := flag.NewFlagSet("gate extract", flag.ContinueOnError)
 	out := fs.String("o", "", "where to write the report (required)")
+	agent := fs.String("agent", "", "the agent that wrote the report; with -mode, -base and -head, normalize it")
+	mode := fs.String("mode", "", "the agent's mode (gate, advisory, author)")
+	base := fs.String("base", "", "the run's base commit")
+	head := fs.String("head", "", "the run's head commit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *out == "" {
 		return fmt.Errorf("gate extract: -o is required")
+	}
+	run := []string{*agent, *mode, *base, *head}
+	normalize := slices.ContainsFunc(run, func(s string) bool { return s != "" })
+	if normalize && slices.Contains(run, "") {
+		return fmt.Errorf("gate extract: -agent, -mode, -base and -head go together")
 	}
 	in := os.Stdin
 	if fs.NArg() > 0 {
@@ -57,6 +72,11 @@ func runGateExtract(args []string) error {
 	b, err := gate.LastJSONBlock(text)
 	if err != nil {
 		return err
+	}
+	if normalize {
+		if b, err = review.NormalizeJSON(b, *agent, *mode, *base, *head); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
 		return err

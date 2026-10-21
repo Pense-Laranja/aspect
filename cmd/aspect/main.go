@@ -47,7 +47,7 @@ Usage:
   aspect gate plan [flags]             which review agents apply to a change (JSON)
   aspect gate check <run-dir> [flags]  validate the agents' reports; exit 1 when the gates block
   aspect gate render <run-dir> [flags] the review result as a Markdown PR comment
-  aspect gate extract -o FILE [input]  save the report an agent printed (claude -p output)
+  aspect gate extract -o FILE [flags] [input]  save the report an agent printed (claude -p output)
   aspect review [flags]                run the review agents on Gemini and gate the change;
                                        exit 1 when the gates block, 2 when there is no verdict
   aspect review status [run-id]        a run's agents and outcome (the current run; live while it runs)
@@ -120,6 +120,8 @@ Gate flags:
           -head REF (default HEAD)  -o FILE (also write the plan, e.g. <run-dir>/plan.json)
   check, render: -override (a maintainer overrode the gate)  -public (redact security details)
   check:  -json (print the result as JSON)
+  extract: -agent A -mode M -base SHA -head SHA (the run's; normalize the report as aspect review does,
+          so an invented category maps to the nearest one instead of invalidating the report)
   A run directory holds plan.json and one <agent>.json report per planned agent.
 
 Review flags:

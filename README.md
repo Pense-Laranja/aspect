@@ -226,7 +226,8 @@ Each agent outputs a structured JSON report conforming to the `aspect-review/v1`
 aspect gate plan -base origin/main -o .review/run/plan.json  # determine which agents apply
 aspect gate check  .review/run                               # exits non-zero if a gate blocks
 aspect gate render .review/run                               # formats the markdown PR review comment
-aspect gate extract -o .review/run/<agent>.json <transcript>  # extracts verbatim JSON report
+aspect gate extract -o .review/run/<agent>.json -agent <agent> -mode <mode> -base <sha> -head <sha> <transcript>
+                                                             # saves the agent's report, normalized as aspect review does
 ```
 
 ### Review Engines & Providers

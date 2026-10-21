@@ -1,6 +1,7 @@
 package review
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -306,6 +307,30 @@ func Normalize(raw *Object, agent, mode, base, head string) (*Report, error) {
 		r.ADRs = append(r.ADRs, adr)
 	}
 	return r, nil
+}
+
+// NormalizeJSON is Normalize for a report as JSON text, such as the one a
+// Claude Code or Gemini CLI agent prints in CI: it returns the report as
+// `aspect gate check` reads it. The agent, mode, base and head are the
+// run's, whatever the report says.
+func NormalizeJSON(data []byte, agent, mode, base, head string) ([]byte, error) {
+	v, err := parseValue(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidReport, err)
+	}
+	raw, ok := v.(*Object)
+	if !ok {
+		return nil, fmt.Errorf("%w: the report is not a JSON object", ErrInvalidReport)
+	}
+	r, err := Normalize(raw, agent, mode, base, head)
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }
 
 func orText(v any, fallback string) string {
