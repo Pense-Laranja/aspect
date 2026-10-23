@@ -33,7 +33,7 @@ func TestModulesFor(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := func(rel string) string { return filepath.Join(repo, filepath.FromSlash(rel)) }
-	names, _, unowned := modulesFor(s, repo, []string{in("pkg/orders/order.go"), in("pkg/orders"), in("."), "orders", in("pkg/orders/sub"), "nosuch", t.TempDir()})
+	names, _, _, unowned := modulesFor(s, repo, []string{in("pkg/orders/order.go"), in("pkg/orders"), in("."), "orders", in("pkg/orders/sub"), "nosuch", t.TempDir()})
 	if !slices.Equal(names, []string{"orders", "root"}) {
 		t.Errorf("names = %v", names)
 	}
@@ -42,15 +42,20 @@ func TestModulesFor(t *testing.T) {
 	}
 }
 
-// A path a module's topic covers is that module's too, and the files are
-// what selects the topics shown; naming a module shows all of them.
+// A path a module's topic touches (its patterns, its brief) is that
+// module's too, whether or not an earlier argument already brought the
+// module in, and the files are what selects the topics shown; naming a
+// module shows all of them.
 func TestModulesForTopics(t *testing.T) {
 	repo := t.TempDir()
 	for rel, content := range map[string]string{
 		"_aspect/aspect.yaml": "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n" +
-			"  - {name: orders, path: pkg/orders, intent: a, goals: [G1], topics: [{name: pages, files: [admin/order_*.go], invariants: [x]}]}\n",
+			"  - {name: orders, path: pkg/orders, intent: a, goals: [G1], topics: [{name: pages, files: [admin/order_*.go], invariants: [x], brief: ../rules/pages.md}]}\n",
 		"admin/order_page.go": "package admin\n",
+		"admin/order_list.go": "package admin\n",
 		"admin/user_page.go":  "package admin\n",
+		"rules/pages.md":      "Pages.\n",
+		"go.mod":              "module example.com/g\n",
 	} {
 		p := filepath.Join(repo, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -65,18 +70,23 @@ func TestModulesForTopics(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := func(rel string) string { return filepath.Join(repo, filepath.FromSlash(rel)) }
-	names, files, unowned := modulesFor(s, repo, []string{in("admin/order_page.go")})
-	if !slices.Equal(names, []string{"orders"}) || !slices.Equal(files, []string{"admin/order_page.go"}) || len(unowned) != 0 {
-		t.Errorf("a file a topic covers: names = %v, files = %v, unowned = %v", names, files, unowned)
-	}
-	if names, files, _ = modulesFor(s, repo, []string{in("admin")}); !slices.Equal(names, []string{"orders"}) || !slices.Equal(files, []string{"admin/order_page.go", "admin/user_page.go"}) {
-		t.Errorf("a directory: names = %v, files = %v", names, files)
-	}
-	if _, files, unowned = modulesFor(s, repo, []string{in("admin/user_page.go")}); files == nil || len(unowned) != 1 {
-		t.Errorf("a file nothing owns or covers: files = %v, unowned = %v", files, unowned)
-	}
-	if _, files, _ = modulesFor(s, repo, []string{"orders", in("admin/order_page.go")}); files != nil {
-		t.Errorf("naming a module shows every topic, want nil files, got %v", files)
+	for _, tc := range []struct {
+		args               []string
+		names, files       []string
+		byName, anyUnowned bool
+	}{
+		{[]string{in("admin/order_page.go")}, []string{"orders"}, []string{"admin/order_page.go"}, false, false},
+		// The second file's module is already in: still no unowned report.
+		{[]string{in("admin/order_page.go"), in("admin/order_list.go")}, []string{"orders"}, []string{"admin/order_page.go", "admin/order_list.go"}, false, false},
+		{[]string{"orders", in("admin/order_page.go")}, []string{"orders"}, []string{"admin/order_page.go"}, true, false},
+		{[]string{in("rules/pages.md")}, []string{"orders"}, []string{"rules/pages.md"}, false, false},
+		{[]string{in("admin")}, []string{"orders"}, []string{"admin/order_list.go", "admin/order_page.go", "admin/user_page.go"}, false, false},
+		{[]string{in("admin/user_page.go")}, nil, []string{"admin/user_page.go"}, false, true},
+	} {
+		names, files, byName, unowned := modulesFor(s, repo, tc.args)
+		if !slices.Equal(names, tc.names) || !slices.Equal(files, tc.files) || byName != tc.byName || (len(unowned) > 0) != tc.anyUnowned {
+			t.Errorf("%v: names = %v, files = %v, byName = %v, unowned = %v", tc.args, names, files, byName, unowned)
+		}
 	}
 }
 

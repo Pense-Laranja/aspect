@@ -110,3 +110,26 @@ tiers:
 		t.Fatalf("client step = %+v", st)
 	}
 }
+
+// The Tester covers a module's invariants and its topics' alike.
+func TestStepCountsTopicInvariants(t *testing.T) {
+	s := parse(t, `
+aspect: 1
+system: {name: s, intent: i, module_path: m, goals: [{id: G1, statement: x}]}
+modules:
+  - name: core
+    intent: i
+    goals: [G1]
+    invariants: [always]
+    topics:
+      - {name: a, files: [a/*.go], invariants: [x, y]}
+      - {name: b, files: [b/*.go], constraints: [c]}
+`)
+	p, err := Build(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Steps()[0].Invariants; got != 3 {
+		t.Fatalf("invariants = %d, want 3", got)
+	}
+}

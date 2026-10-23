@@ -721,14 +721,15 @@ modules:
 	}
 	// A file another module owns, which a topic covers, is a change to both.
 	got := modules("admin/refund_page.go")
-	if pay, ok := got["pay"]; !ok || !slices.Equal(pay.Topics, []string{"refunds"}) || !slices.Equal(pay.Files, []string{"admin/refund_page.go"}) {
+	if pay, ok := got["pay"]; !ok || len(pay.Topics) != 1 || pay.Topics[0].Name != "refunds" || !slices.Equal(pay.Files, []string{"admin/refund_page.go"}) ||
+		pay.Topics[0].Brief != "pay/rules/refunds.md" || len(pay.Topics[0].Invariants) != 1 || pay.Topics[0].Invariants[0].Statement != "Capped." {
 		t.Errorf("pay = %+v, want the refunds topic through admin/refund_page.go", got["pay"])
 	}
 	if _, ok := got["admin"]; !ok {
 		t.Errorf("admin, which owns the file, must stay in the plan: %v", got)
 	}
 	// A change to a topic's brief is a change to its module and that topic.
-	if pay := modules("pay/rules/refunds.md")["pay"]; !slices.Equal(pay.Topics, []string{"refunds"}) {
+	if pay := modules("pay/rules/refunds.md")["pay"]; len(pay.Topics) != 1 || pay.Topics[0].Name != "refunds" {
 		t.Errorf("pay = %+v, want the refunds topic through its brief", pay)
 	}
 	// A module's own file touches none of its topics unless one covers it.

@@ -221,12 +221,12 @@ func TestRenderShowsTheTopicsOfTheFiles(t *testing.T) {
 	if out := Render(s, []string{"payments"}, Options{Files: []string{"briefs/slips.md"}}); !strings.Contains(out, "One open slip per order.") {
 		t.Errorf("a change to a topic's brief must show that topic:\n%s", out)
 	}
-	// No files: every topic is shown; empty files: none is, and both are named.
-	if out := Render(s, []string{"payments"}, Options{}); !strings.Contains(out, "REF-CAP") || !strings.Contains(out, "One open slip per order.") || strings.Contains(out, "Topics not shown") {
-		t.Errorf("nil Files must show every topic:\n%s", out)
+	// AllTopics shows every topic; no files shows none, and names them all.
+	if out := Render(s, []string{"payments"}, Options{AllTopics: true}); !strings.Contains(out, "REF-CAP") || !strings.Contains(out, "One open slip per order.") || strings.Contains(out, "Topics not shown") {
+		t.Errorf("AllTopics must show every topic:\n%s", out)
 	}
-	if out := Render(s, []string{"payments"}, Options{Files: []string{}}); strings.Contains(out, "REF-CAP") || !strings.Contains(out, "- refunds: Giving money back.") {
-		t.Errorf("empty Files must show no topic and name them all:\n%s", out)
+	if out := Render(s, []string{"payments"}, Options{}); strings.Contains(out, "REF-CAP") || !strings.Contains(out, "- refunds: Giving money back.") {
+		t.Errorf("no files must show no topic and name them all:\n%s", out)
 	}
 }
 

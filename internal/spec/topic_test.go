@@ -68,6 +68,46 @@ topics:
 			t.Errorf("Covers(%q) = %v, want %v", file, got, want)
 		}
 	}
+	// A change touches a topic through its files, its brief and the
+	// module's fragment; the root spec file touches none.
+	pay := s.Module("pay")
+	for file, want := range map[string]int{
+		"admin/refund_page.go":     1,
+		"pay/rules/refunds.md":     1,
+		"_aspect/modules/pay.yaml": 1,
+		"_aspect/aspect.yaml":      0,
+		"pay/charge.go":            0,
+	} {
+		if touched, rest := s.TopicsTouching(pay, []string{file}); len(touched) != want || len(touched)+len(rest) != 1 {
+			t.Errorf("TopicsTouching(%q) = %d touched, %d rest; want %d touched", file, len(touched), len(rest), want)
+		}
+	}
+	if got := s.TopicBrief(&tp); got != "pay/rules/refunds.md" {
+		t.Errorf("TopicBrief = %q, want the repository-relative path", got)
+	}
+}
+
+// A module whose invariants all live in its topics is not warned that it
+// has none; one whose topics hold none still is.
+func TestTopicInvariantsSilenceTheNoInvariantsWarning(t *testing.T) {
+	for topic, wantWarn := range map[string]bool{"invariants: [Capped.]": false, "constraints: [c]": true} {
+		s, err := Parse([]byte(`
+aspect: 1
+system: {name: s, intent: i, module_path: m, goals: [{id: G1, statement: x}]}
+modules:
+  - name: pay
+    intent: i
+    goals: [G1]
+    topics:
+      - {name: refunds, files: [pay/r*.go], ` + topic + `}
+`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(join(Validate(s)), "has no scenarios or invariants"); got != wantWarn {
+			t.Errorf("%s: warning = %v, want %v", topic, got, wantWarn)
+		}
+	}
 }
 
 func TestValidateTopics(t *testing.T) {

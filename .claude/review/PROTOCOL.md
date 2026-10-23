@@ -19,7 +19,7 @@ out:  .review/<run-id>/<agent>.json
 ```
 
 Optional extras: `files:` (the changed paths that made your gate apply),
-`modules:` (the touched spec modules with their declared invariants and goals, from `plan.json`),
+`modules:` (the touched spec modules with their declared invariants and goals, and the topics of theirs the change touches with each topic's constraints and invariants, from `plan.json`),
 `handoff:` (a report from another agent that asked for you), and `pr:` (the
 PR description).
 

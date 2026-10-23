@@ -39,10 +39,23 @@ type ModuleContext struct {
 	Constraints []string         `json:"constraints,omitempty"`
 	// Brief is the module's brief, relative to the repository.
 	Brief string `json:"brief,omitempty"`
-	// Topics are the module's topics the changes touch: a changed file
-	// matches one of a topic's patterns, or is the topic's brief.
-	Topics []string `json:"topics,omitempty"`
-	Files  []string `json:"files,omitempty"`
+	// Topics are the module's topics the changes touch (a changed file
+	// matches one of a topic's patterns, or is the topic's brief or the
+	// module's fragment), with their rules: they bind the changed files as
+	// the module's own do.
+	Topics []TopicContext `json:"topics,omitempty"`
+	Files  []string       `json:"files,omitempty"`
+}
+
+// TopicContext is one touched topic of a module (spec.Topic) and the rules
+// it holds.
+type TopicContext struct {
+	Name        string           `json:"name"`
+	Files       []string         `json:"files"`
+	Constraints []string         `json:"constraints,omitempty"`
+	Invariants  []spec.Invariant `json:"invariants,omitempty"`
+	// Brief is the topic's brief, relative to the repository.
+	Brief string `json:"brief,omitempty"`
 }
 
 // Plan is the list of agents that apply to a change. It is written next to
@@ -174,32 +187,27 @@ func moduleContexts(sp *spec.Spec, repo string, changes []Change) []ModuleContex
 		}
 		topicBriefs := map[string]bool{}
 		for j := range m.Topics {
-			if b := m.Topics[j].Brief.Path; b != "" {
-				topicBriefs[rel(filepath.Join(sp.Dir, filepath.FromSlash(b)))] = true
+			if b := sp.TopicBrief(&m.Topics[j]); b != "" {
+				topicBriefs[b] = true
 			}
 		}
-		var files, topics []string
+		var files []string
+		var topics []TopicContext
 		for _, ch := range changes {
 			switch {
 			case owner[ch.Path] == m.Name,
 				ch.Path == brief || ch.Path == specFile || topicBriefs[ch.Path],
 				owner[ch.Path] == "" && !m.Placed() && legacyMatch(m, ch.Path),
-				topicCovers(m, ch.Path):
+				m.TopicCovers(ch.Path):
 				files = append(files, ch.Path)
 			}
 		}
 		if len(files) == 0 {
 			continue
 		}
-		for j := range m.Topics {
-			t := &m.Topics[j]
-			for _, f := range files {
-				b := t.Brief.Path != "" && f == rel(filepath.Join(sp.Dir, filepath.FromSlash(t.Brief.Path)))
-				if b || t.Covers(f) {
-					topics = append(topics, t.Name)
-					break
-				}
-			}
+		touched, _ := sp.TopicsTouching(m, files)
+		for _, t := range touched {
+			topics = append(topics, TopicContext{Name: t.Name, Files: t.Files, Constraints: t.Constraints, Invariants: t.Invariants, Brief: sp.TopicBrief(t)})
 		}
 		out = append(out, ModuleContext{
 			Name:        m.Name,
@@ -214,17 +222,6 @@ func moduleContexts(sp *spec.Spec, repo string, changes []Change) []ModuleContex
 		})
 	}
 	return out
-}
-
-// topicCovers reports whether one of m's topics covers file: its rules bind
-// the file, so a change to it is a change to m, whichever module owns it.
-func topicCovers(m *spec.Module, file string) bool {
-	for j := range m.Topics {
-		if m.Topics[j].Covers(file) {
-			return true
-		}
-	}
-	return false
 }
 
 // legacyMatch guesses a file's module for a spec imported before modules

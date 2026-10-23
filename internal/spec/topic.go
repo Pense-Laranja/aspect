@@ -3,6 +3,7 @@ package spec
 import (
 	"fmt"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -98,4 +99,79 @@ func CheckPathPattern(p string) error {
 		}
 	}
 	return nil
+}
+
+// TopicCovers reports whether one of m's topics covers file.
+func (m *Module) TopicCovers(file string) bool {
+	for j := range m.Topics {
+		if m.Topics[j].Covers(file) {
+			return true
+		}
+	}
+	return false
+}
+
+// TopicBrief is t's brief relative to the repository root, slash separated
+// (as written when the spec has no root), or "" when t has none.
+func (s *Spec) TopicBrief(t *Topic) string {
+	if t.Brief.Path == "" {
+		return ""
+	}
+	if s.Root == "" || s.Dir == "" {
+		return t.Brief.Path
+	}
+	return s.repoRel(filepath.Join(s.Dir, filepath.FromSlash(t.Brief.Path)))
+}
+
+// TopicsTouching splits m's topics into those files touch and the rest, in
+// order. files are relative to the repository root, as a diff names them. A
+// topic is touched by a file its patterns match, by its own brief, and by
+// the fragment m is written in: an edit to a topic's rules, wherever they
+// are written, is a change to the topic. The root spec file touches none,
+// since it holds the system and, in a single-file spec, every module.
+func (s *Spec) TopicsTouching(m *Module, files []string) (touched, rest []*Topic) {
+	fragment := ""
+	if f := s.Sources.ModuleFile(m.Name); f != "" && s.Root != "" {
+		if r := s.repoRel(f); r != s.repoRel(s.Path) {
+			fragment = r
+		}
+	}
+	for j := range m.Topics {
+		t := &m.Topics[j]
+		brief := s.TopicBrief(t)
+		hit := false
+		for _, f := range files {
+			if t.Covers(f) || (brief != "" && f == brief) || (fragment != "" && f == fragment) {
+				hit = true
+				break
+			}
+		}
+		if hit {
+			touched = append(touched, t)
+		} else {
+			rest = append(rest, t)
+		}
+	}
+	return touched, rest
+}
+
+// repoRel is file (absolute, or relative to the working directory) relative
+// to the repository root, slash separated, or "" when it is not inside it.
+func (s *Spec) repoRel(file string) string {
+	if s.Root == "" || file == "" {
+		return ""
+	}
+	root, err := filepath.Abs(s.Root)
+	if err != nil {
+		return ""
+	}
+	abs, err := filepath.Abs(file)
+	if err != nil || !Inside(root, abs) {
+		return ""
+	}
+	r, err := filepath.Rel(root, abs)
+	if err != nil {
+		return ""
+	}
+	return filepath.ToSlash(r)
 }

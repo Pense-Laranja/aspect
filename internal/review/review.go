@@ -249,11 +249,7 @@ func (e *Engine) specContexts(ctx context.Context, repo string, plan *gate.Plan)
 		}
 	}
 	return func(a gate.Planned) string {
-		files := a.Files
-		if files == nil {
-			files = []string{} // nil would show every topic
-		}
-		text := speccontext.Render(sp, a.Modules, speccontext.Options{Budget: e.Config.SpecBudget, Files: files})
+		text := speccontext.Render(sp, a.Modules, speccontext.Options{Budget: e.Config.SpecBudget, Files: a.Files})
 		if text == "" {
 			return ""
 		}

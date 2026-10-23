@@ -637,7 +637,9 @@ modules:
 | `brief` | path | no | Sidecar document for the topic, like a module's (see [Briefs](#briefs)) |
 
 A reviewer is shown the module's own rules and, of its topics, those that
-cover one of the reviewer's files or whose brief is one of them; the others
+cover one of the reviewer's files or whose brief, or the fragment the
+module is written in, is one of them (an edit to a topic's rules is a
+change to the topic); the others
 are named in a line each, with their intent, so a reviewer knows those rules
 exist. A file a topic covers is a change to the topic's module, whichever
 module owns it: a rule about an admin page that the module's code drives

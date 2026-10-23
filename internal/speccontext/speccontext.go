@@ -22,7 +22,6 @@ package speccontext
 import (
 	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/eideroliveira/aspect/internal/spec"
@@ -55,9 +54,12 @@ type Options struct {
 	// OmitBriefs leaves out the modules' briefs and their topics' briefs.
 	OmitBriefs bool
 	// Files are the files the reader is about, relative to the repository
-	// root: only the topics that cover one of them (or whose brief is one of
-	// them) are shown. Nil shows every topic.
+	// root: of a module's topics only those they touch are shown
+	// (spec.Spec.TopicsTouching), the others named.
 	Files []string
+	// AllTopics shows every topic whatever Files holds, for a reader about
+	// a whole module.
+	AllTopics bool
 }
 
 // part is one piece the budget decides on.
@@ -106,7 +108,13 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 	shown := make([][]*spec.Topic, len(mods))
 	for i, m := range mods {
 		var hidden []*spec.Topic
-		shown[i], hidden = topicsFor(s, m, opt.Files)
+		if opt.AllTopics {
+			for j := range m.Topics {
+				shown[i] = append(shown[i], &m.Topics[j])
+			}
+		} else {
+			shown[i], hidden = s.TopicsTouching(m, opt.Files)
+		}
 		parts = append(parts, part{module: i, kind: kindCore, label: "the rules of " + m.Name, text: core(s, m, hidden), truncatable: true})
 	}
 	for i, m := range mods {
@@ -231,20 +239,6 @@ func runeStart(s string, n int) int {
 		n--
 	}
 	return n
-}
-
-// topicsFor splits m's topics into those shown for files (all of them when
-// files is nil) and those not.
-func topicsFor(s *spec.Spec, m *spec.Module, files []string) (shown, hidden []*spec.Topic) {
-	for j := range m.Topics {
-		t := &m.Topics[j]
-		if files == nil || t.CoversAny(files) || (t.Brief.Path != "" && slices.Contains(files, briefPath(s, t.Brief.Path))) {
-			shown = append(shown, t)
-		} else {
-			hidden = append(hidden, t)
-		}
-	}
-	return shown, hidden
 }
 
 // topicRules is what binds the files a topic covers.

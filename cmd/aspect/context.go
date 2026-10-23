@@ -42,26 +42,27 @@ func runContext(path string, args []string) error {
 	if root == "" {
 		root = s.Root
 	}
-	names, files, unowned := modulesFor(s, root, fs.Args())
+	names, files, byName, unowned := modulesFor(s, root, fs.Args())
 	for _, a := range unowned {
 		fmt.Fprintf(os.Stderr, "aspect: no module of the spec owns %s\n", a)
 	}
 	if len(names) == 0 {
 		return exitCode{code: 1, msg: "nothing to show"}
 	}
-	fmt.Print(speccontext.Render(s, names, speccontext.Options{Budget: *budget, OmitSystem: !*system, OmitBriefs: !*briefs, Files: files}))
+	fmt.Print(speccontext.Render(s, names, speccontext.Options{Budget: *budget, OmitSystem: !*system, OmitBriefs: !*briefs, Files: files, AllTopics: byName}))
 	return nil
 }
 
 // modulesFor resolves each argument to the module that owns it, in order,
 // without repeats: a path (absolute, or relative to the working directory)
 // that exists is looked up by ownership (a directory as the files directly
-// in it), anything else as a module name. A module one of whose topics
-// covers a path is that path's too, as in a review's plan. files are the
-// paths, relative to the repository (a directory's files directly in it),
-// whose topics are shown; nil, which shows every topic, when an argument
-// named a module.
-func modulesFor(s *spec.Spec, root string, args []string) (names, files, unowned []string) {
+// in it), anything else as a module name. A module one of whose topics a
+// path touches (spec.Spec.TopicsTouching: its patterns, its brief) is that
+// path's too, as in a review's plan. files are the paths, relative to the
+// repository (a directory's files directly in it), that select the topics
+// shown; byName says an argument named a module, whose topics are then all
+// shown.
+func modulesFor(s *spec.Spec, root string, args []string) (names, files []string, byName bool, unowned []string) {
 	rootAbs, _ := filepath.Abs(root)
 	seen := map[string]bool{}
 	add := func(name string) {
@@ -70,17 +71,18 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, files, unowned
 			seen[name] = true
 		}
 	}
-	byName := false
-	addCovering := func(file string) {
+	// addTouching adds the modules whose topics file touches, and says
+	// whether there was one, whether or not it was added before.
+	addTouching := func(file string) bool {
 		files = append(files, file)
+		touched := false
 		for _, m := range s.AllModules() {
-			for j := range m.Topics {
-				if m.Topics[j].Covers(file) {
-					add(m.Name)
-					break
-				}
+			if t, _ := s.TopicsTouching(m, []string{file}); len(t) > 0 {
+				add(m.Name)
+				touched = true
 			}
 		}
+		return touched
 	}
 	for _, a := range args {
 		info, statErr := os.Stat(a)
@@ -105,7 +107,7 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, files, unowned
 		rel, _ := filepath.Rel(rootAbs, abs)
 		file := filepath.ToSlash(rel)
 		var m *spec.Module
-		before := len(names)
+		touched := false
 		if info.IsDir() {
 			if file == "." {
 				file = ""
@@ -114,28 +116,26 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, files, unowned
 			if m != nil {
 				add(m.Name)
 			}
-			entries, _ := os.ReadDir(abs)
+			entries, err := os.ReadDir(abs)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "aspect: cannot list %s, so the topics of its files are not shown: %v\n", a, err)
+			}
 			for _, e := range entries {
-				if !e.IsDir() {
-					addCovering(path.Join(file, e.Name()))
+				if !e.IsDir() && addTouching(path.Join(file, e.Name())) {
+					touched = true
 				}
 			}
 		} else {
 			if _, m = lang.ModuleOf(s, file); m != nil {
 				add(m.Name)
 			}
-			addCovering(file)
+			touched = addTouching(file)
 		}
-		if m == nil && len(names) == before {
+		if m == nil && !touched {
 			unowned = append(unowned, a)
 		}
 	}
-	if byName {
-		files = nil
-	} else if files == nil {
-		files = []string{}
-	}
-	return names, files, unowned
+	return names, files, byName, unowned
 }
 
 // runBriefs points modules' briefs at their packages' own ASPECT.md, read
