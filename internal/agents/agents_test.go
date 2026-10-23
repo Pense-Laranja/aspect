@@ -229,3 +229,22 @@ func TestCompleteFallsBackWhenGrammarIsTooLarge(t *testing.T) {
 		t.Fatal("IsGrammarTooLarge misclassifies")
 	}
 }
+
+// The pipeline's agents build the whole module, so they see every topic's
+// brief; a blank one adds no heading.
+func TestRenderModuleShowsTopicBriefs(t *testing.T) {
+	tk := task(t, "go")
+	tk.Module.Topics = []spec.Topic{
+		{Name: "counts", Files: []string{"stock/count*.go"}, Invariants: []spec.Invariant{{Statement: "Whole units."}}, Brief: spec.Brief{Path: "briefs/counts.md", Text: "Counts are taken at close."}},
+		{Name: "empty", Files: []string{"stock/e.go"}, Brief: spec.Brief{Path: "briefs/e.md", Text: " "}},
+	}
+	out := renderModule(tk, "Module")
+	for _, want := range []string{"## Brief of topic counts (briefs/counts.md)", "stock/count*.go", "Counts are taken at close.", "Whole units."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Brief of topic empty") {
+		t.Errorf("a blank topic brief must not render:\n%s", out)
+	}
+}

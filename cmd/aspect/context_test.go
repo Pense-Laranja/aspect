@@ -33,12 +33,60 @@ func TestModulesFor(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := func(rel string) string { return filepath.Join(repo, filepath.FromSlash(rel)) }
-	names, unowned := modulesFor(s, repo, []string{in("pkg/orders/order.go"), in("pkg/orders"), in("."), "orders", in("pkg/orders/sub"), "nosuch", t.TempDir()})
+	names, _, _, unowned := modulesFor(s, repo, []string{in("pkg/orders/order.go"), in("pkg/orders"), in("."), "orders", in("pkg/orders/sub"), "nosuch", t.TempDir()})
 	if !slices.Equal(names, []string{"orders", "root"}) {
 		t.Errorf("names = %v", names)
 	}
 	if len(unowned) != 3 || unowned[0] != in("pkg/orders/sub") || unowned[1] != "nosuch" || !strings.Contains(unowned[2], "(outside the repository") {
 		t.Errorf("unowned = %v (want the subpackage, the unknown name and the outside directory)", unowned)
+	}
+}
+
+// A path a module's topic touches (its patterns, its brief) is that
+// module's too, whether or not an earlier argument already brought the
+// module in, and the files are what selects the topics shown; naming a
+// module shows all of them.
+func TestModulesForTopics(t *testing.T) {
+	repo := t.TempDir()
+	for rel, content := range map[string]string{
+		"_aspect/aspect.yaml": "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n" +
+			"  - {name: orders, path: pkg/orders, intent: a, goals: [G1], topics: [{name: pages, files: [admin/order_*.go], invariants: [x], brief: ../rules/pages.md}]}\n",
+		"admin/order_page.go": "package admin\n",
+		"admin/order_list.go": "package admin\n",
+		"admin/user_page.go":  "package admin\n",
+		"rules/pages.md":      "Pages.\n",
+		"go.mod":              "module example.com/g\n",
+	} {
+		p := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := spec.Load(filepath.Join(repo, "_aspect", "aspect.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := func(rel string) string { return filepath.Join(repo, filepath.FromSlash(rel)) }
+	for _, tc := range []struct {
+		args               []string
+		names, files       []string
+		byName, anyUnowned bool
+	}{
+		{[]string{in("admin/order_page.go")}, []string{"orders"}, []string{"admin/order_page.go"}, false, false},
+		// The second file's module is already in: still no unowned report.
+		{[]string{in("admin/order_page.go"), in("admin/order_list.go")}, []string{"orders"}, []string{"admin/order_page.go", "admin/order_list.go"}, false, false},
+		{[]string{"orders", in("admin/order_page.go")}, []string{"orders"}, []string{"admin/order_page.go"}, true, false},
+		{[]string{in("rules/pages.md")}, []string{"orders"}, []string{"rules/pages.md"}, false, false},
+		{[]string{in("admin")}, []string{"orders"}, []string{"admin/order_list.go", "admin/order_page.go", "admin/user_page.go"}, false, false},
+		{[]string{in("admin/user_page.go")}, nil, []string{"admin/user_page.go"}, false, true},
+	} {
+		names, files, byName, unowned := modulesFor(s, repo, tc.args)
+		if !slices.Equal(names, tc.names) || !slices.Equal(files, tc.files) || byName != tc.byName || (len(unowned) > 0) != tc.anyUnowned {
+			t.Errorf("%v: names = %v, files = %v, byName = %v, unowned = %v", tc.args, names, files, byName, unowned)
+		}
 	}
 }
 

@@ -220,7 +220,8 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 
 // specContexts returns what each planned agent is shown of the spec: the
 // system's constraints and the rules of the modules its files belong to
-// (plan.Agents[i].Modules), within Config.SpecBudget. Reviewers have no
+// (plan.Agents[i].Modules), with the topics of theirs that cover its files
+// (plan.Agents[i].Files), within Config.SpecBudget. Reviewers have no
 // tools; this is how a rule written in the spec reaches them. The spec is
 // read from the working tree, as the plan's modules were, but only what is
 // committed at the change's head, as it is there, reaches a prompt (see
@@ -248,7 +249,7 @@ func (e *Engine) specContexts(ctx context.Context, repo string, plan *gate.Plan)
 		}
 	}
 	return func(a gate.Planned) string {
-		text := speccontext.Render(sp, a.Modules, speccontext.Options{Budget: e.Config.SpecBudget})
+		text := speccontext.Render(sp, a.Modules, speccontext.Options{Budget: e.Config.SpecBudget, Files: a.Files})
 		if text == "" {
 			return ""
 		}

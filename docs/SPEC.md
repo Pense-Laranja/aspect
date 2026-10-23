@@ -513,6 +513,7 @@ modules:
 | `scenarios` | list of Scenario | no | Given/When/Then examples |
 | `constraints` | list of text | no | Module-specific rules |
 | `brief` | path | no | Sidecar document for the module (see [Briefs](#briefs)) |
+| `topics` | list of Topic | no | Rules that bind only some files (see [Topics](#topics)) |
 
 Operation: `name` and `signature` (both required), `intent`, `pre`, `post`.
 Signatures are the contract dependents are generated against; keep them
@@ -602,13 +603,63 @@ already drifted from it and which held other documents (the `CLAUDE.md`
 an import copied, say), and lists the copies no longer referenced. A brief
 someone wrote is left alone.
 
+### Topics
+
+A module's `constraints`, `invariants` and `brief` bind every file of the
+module. When some of its rules bind only some files, and all of them
+together outgrow what a reviewer can be shown (`CODE_REVIEWER_SPEC_BUDGET`,
+section 13), they go in topics:
+
+```yaml
+modules:
+  - name: translatejob
+    path: translatejob
+    intent: Translate the curriculum and render it in Portuguese.
+    brief: ../../translatejob/ASPECT.md        # the index of the topics
+    invariants: [Every model call is metered.]
+    topics:
+      - name: artwork
+        intent: How images and art pages are read, rendered and retried.
+        files: [translatejob/image_*.go, translatejob/art_page*.go, modules/translation/clean_plates.go]
+        constraints: [An art page ships as the original with the model's pixels only inside its text boxes.]
+        invariants:
+          - {id: ART-INK, statement: A candidate that lost a text's coloured ink is never approved.}
+        brief: ../../translatejob/rules/artwork.md
+```
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | identifier | yes | Unique within the module |
+| `intent` | text | no | What the topic's rules are about, in a line; shown when the topic is not |
+| `files` | glob patterns | yes | The files the rules bind, relative to the repository root, in the gates' syntax (`path.Match` per segment, `**` for any number of segments). They may lie outside the module's directory |
+| `constraints` | list of text | no | Rules for those files |
+| `invariants` | list of Invariant | no | Properties of those files; ids are unique across the module and its topics, so a scenario may name one |
+| `brief` | path | no | Sidecar document for the topic, like a module's (see [Briefs](#briefs)) |
+
+A reviewer is shown the module's own rules and, of its topics, those that
+cover one of the reviewer's files or whose brief, or the fragment the
+module is written in, is one of them (an edit to a topic's rules is a
+change to the topic); the others
+are named in a line each, with their intent, so a reviewer knows those rules
+exist. A file a topic covers is a change to the topic's module, whichever
+module owns it: a rule about an admin page that the module's code drives
+reaches the review of that page. In order of priority the module's rules
+come first, then its topics' rules, then operations and scenarios, then the
+module's brief, then the topics' briefs. The pipeline's agents, which build
+the whole module, see every topic. A topic needs a name and at least one
+file pattern, and one with no constraints, invariants or brief is accepted
+with a warning.
+
 ### Reading the spec of the code at hand
 
 `aspect context <spec> <path|module>...` prints what the spec says about
 the modules owning the given files or directories (a directory stands for
 the files directly in it), or the modules named: the system's constraints,
 then each module's intent, goals, owned entities, constraints and
-invariants, then its operations and scenarios, then its brief. `-budget N`
+invariants, then its operations and scenarios, then its brief. Of a
+module's topics it shows those covering the files given, every one when an
+argument names a module, and a path a topic covers brings in the topic's
+module. `-budget N`
 caps it at about N tokens, in that order of priority, and names what it left
 out. It is the same text `aspect review` shows each reviewer about the
 modules its files belong to (section 13), so a project can keep package
@@ -691,6 +742,7 @@ Topology
 - A non-sqlite test engine without `dsn_env`.
 - An external interface without a `service` name; an external surface nobody consumes.
 - `system.language`, `module_path` or `stack` set alongside `tiers`; a `tier` field on a tier-local database; a single tier written under `tiers`.
+- A topic with no constraints, invariants or brief.
 - A `brief` that was not loaded (spec parsed from memory) or is empty. A brief path that is absolute, leads out of the repository (out of the spec's directory for a spec parsed from memory) or into a `.git` directory is an error.
 - A dependency that was not loaded (spec parsed from memory).
 - `operations` listed on a surface with no `entity`; an operation that is not a lowercase verb (a function name such as `ExportCSVHandler`).
@@ -722,12 +774,14 @@ weakest verdict.
 
 The review agents (`aspect review`) have no tools, so the spec reaches them
 in their prompt: each is shown the system's constraints and, for the modules
-its files belong to, their intent, goals, constraints, invariants,
-operations, scenarios and brief, in that order of priority, within
+its files belong to, their intent, goals, constraints, invariants, the
+rules of the topics covering its files, operations, scenarios, brief and
+those topics' briefs, in that order of priority, within
 `CODE_REVIEWER_SPEC_BUDGET` tokens (`aspect context` prints the same text).
 A file belongs to a module when the module owns it as code (its `path`, or
-its directory by name), or when it is the module's brief or the fragment the
-module is written in. A rule stated in a module's constraints or invariants
+its directory by name), when one of the module's topics covers it, or when
+it is the module's brief, a topic's brief or the fragment the module is
+written in. A rule stated in a module's constraints or invariants
 is therefore checked on every change to that module; one kept only in a
 document no module references is not. Only what is committed at the
 change's head, as it is there, reaches a prompt: a brief that is not a
@@ -960,6 +1014,8 @@ modules:                                                # single-tier
       - {id: string, given: text, when: text, then: text, goals: [goal-id]}
     constraints: [text]                                 #opt
     brief: relative/path.md                             #opt
+    topics:                                             #opt
+      - {name: identifier, intent: text, files: [glob], constraints: [text], invariants: [text | Invariant], brief: relative/path.md}
 
 tiers:                                                  # multi-tier, instead of modules
   - name: identifier
