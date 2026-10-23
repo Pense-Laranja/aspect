@@ -337,6 +337,9 @@ func normalize(s *Spec) {
 		sort.SliceStable(ms, func(i, j int) bool { return ms[i].Name < ms[j].Name })
 		for i := range ms {
 			ms[i].Brief.Path = cleanPath(ms[i].Brief.Path)
+			for j := range ms[i].Topics {
+				ms[i].Topics[j].Brief.Path = cleanPath(ms[i].Topics[j].Brief.Path)
+			}
 		}
 	}
 	sortEntities := func(db *Database) {

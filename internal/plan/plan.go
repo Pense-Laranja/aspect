@@ -183,9 +183,19 @@ func stepFor(s *spec.Spec, t *spec.Tier, m *spec.Module) Step {
 		DependsOn:  append([]string{}, m.DependsOn...),
 		Goals:      goals,
 		Scenarios:  len(m.Scenarios),
-		Invariants: len(m.Invariants),
+		Invariants: invariantCount(m),
 		Entities:   append([]string{}, m.Entities...),
 		Surfaces:   ids(m.Surfaces),
 		Consumes:   ids(m.Consumes),
 	}
+}
+
+// invariantCount counts a module's invariants, its topics' included: the
+// Tester covers them all.
+func invariantCount(m *spec.Module) int {
+	n := len(m.Invariants)
+	for _, t := range m.Topics {
+		n += len(t.Invariants)
+	}
+	return n
 }

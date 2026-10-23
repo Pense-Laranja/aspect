@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -41,22 +42,26 @@ func runContext(path string, args []string) error {
 	if root == "" {
 		root = s.Root
 	}
-	names, unowned := modulesFor(s, root, fs.Args())
+	names, files, unowned := modulesFor(s, root, fs.Args())
 	for _, a := range unowned {
 		fmt.Fprintf(os.Stderr, "aspect: no module of the spec owns %s\n", a)
 	}
 	if len(names) == 0 {
 		return exitCode{code: 1, msg: "nothing to show"}
 	}
-	fmt.Print(speccontext.Render(s, names, speccontext.Options{Budget: *budget, OmitSystem: !*system, OmitBriefs: !*briefs}))
+	fmt.Print(speccontext.Render(s, names, speccontext.Options{Budget: *budget, OmitSystem: !*system, OmitBriefs: !*briefs, Files: files}))
 	return nil
 }
 
 // modulesFor resolves each argument to the module that owns it, in order,
 // without repeats: a path (absolute, or relative to the working directory)
 // that exists is looked up by ownership (a directory as the files directly
-// in it), anything else as a module name.
-func modulesFor(s *spec.Spec, root string, args []string) (names, unowned []string) {
+// in it), anything else as a module name. A module one of whose topics
+// covers a path is that path's too, as in a review's plan. files are the
+// paths, relative to the repository (a directory's files directly in it),
+// whose topics are shown; nil, which shows every topic, when an argument
+// named a module.
+func modulesFor(s *spec.Spec, root string, args []string) (names, files, unowned []string) {
 	rootAbs, _ := filepath.Abs(root)
 	seen := map[string]bool{}
 	add := func(name string) {
@@ -65,11 +70,24 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, unowned []stri
 			seen[name] = true
 		}
 	}
+	byName := false
+	addCovering := func(file string) {
+		files = append(files, file)
+		for _, m := range s.AllModules() {
+			for j := range m.Topics {
+				if m.Topics[j].Covers(file) {
+					add(m.Name)
+					break
+				}
+			}
+		}
+	}
 	for _, a := range args {
 		info, statErr := os.Stat(a)
 		if statErr != nil {
 			if s.Module(a) != nil {
 				add(a)
+				byName = true
 			} else {
 				unowned = append(unowned, a)
 			}
@@ -87,21 +105,37 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, unowned []stri
 		rel, _ := filepath.Rel(rootAbs, abs)
 		file := filepath.ToSlash(rel)
 		var m *spec.Module
+		before := len(names)
 		if info.IsDir() {
 			if file == "." {
 				file = ""
 			}
 			_, m = lang.ModuleOfDir(s, file)
+			if m != nil {
+				add(m.Name)
+			}
+			entries, _ := os.ReadDir(abs)
+			for _, e := range entries {
+				if !e.IsDir() {
+					addCovering(path.Join(file, e.Name()))
+				}
+			}
 		} else {
-			_, m = lang.ModuleOf(s, file)
+			if _, m = lang.ModuleOf(s, file); m != nil {
+				add(m.Name)
+			}
+			addCovering(file)
 		}
-		if m != nil {
-			add(m.Name)
-		} else {
+		if m == nil && len(names) == before {
 			unowned = append(unowned, a)
 		}
 	}
-	return names, unowned
+	if byName {
+		files = nil
+	} else if files == nil {
+		files = []string{}
+	}
+	return names, files, unowned
 }
 
 // runBriefs points modules' briefs at their packages' own ASPECT.md, read

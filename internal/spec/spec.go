@@ -412,7 +412,10 @@ type Module struct {
 	// Consumes lists surfaces this module is a client of, served by another
 	// tier or an external service, in the same notation.
 	Consumes []string `yaml:"consumes,omitempty" json:"consumes,omitempty"`
-	Brief    `yaml:",inline" json:",inline"`
+	// Topics hold the rules that bind only some of the module's files (see
+	// Topic); the constraints, invariants and brief above bind all of them.
+	Topics []Topic `yaml:"topics,omitempty" json:"topics,omitempty"`
+	Brief  `yaml:",inline" json:",inline"`
 }
 
 // Operation is one exported function or method the module must expose, with
@@ -507,8 +510,9 @@ func (s *Spec) loadDependencies(loading map[string]bool) error {
 	return nil
 }
 
-// Briefs returns every brief in the spec (system, tiers, modules) with the
-// name of its owner, for loading and validation.
+// Briefs returns every brief in the spec (system, tiers, modules and their
+// topics) with the name of its owner, for loading and validation. A topic's
+// owner is "module <name>.topics[<i>]", which Locate resolves.
 func (s *Spec) Briefs() map[string]*Brief {
 	out := map[string]*Brief{"system": &s.System.Brief}
 	for i := range s.Tiers {
@@ -516,6 +520,9 @@ func (s *Spec) Briefs() map[string]*Brief {
 	}
 	for _, m := range s.AllModules() {
 		out["module "+m.Name] = &m.Brief
+		for j := range m.Topics {
+			out[fmt.Sprintf("module %s.topics[%d]", m.Name, j)] = &m.Topics[j].Brief
+		}
 	}
 	return out
 }

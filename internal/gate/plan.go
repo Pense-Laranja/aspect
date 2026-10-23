@@ -38,8 +38,11 @@ type ModuleContext struct {
 	Invariants  []spec.Invariant `json:"invariants,omitempty"`
 	Constraints []string         `json:"constraints,omitempty"`
 	// Brief is the module's brief, relative to the repository.
-	Brief string   `json:"brief,omitempty"`
-	Files []string `json:"files,omitempty"`
+	Brief string `json:"brief,omitempty"`
+	// Topics are the module's topics the changes touch: a changed file
+	// matches one of a topic's patterns, or is the topic's brief.
+	Topics []string `json:"topics,omitempty"`
+	Files  []string `json:"files,omitempty"`
 }
 
 // Plan is the list of agents that apply to a change. It is written next to
@@ -132,8 +135,9 @@ func BuildPlan(c *Config, base, head string, changes []Change, repo, specPath st
 
 // moduleContexts lists the modules the changes touch, in spec order. A file
 // belongs to a module when the module owns it as code (see lang.ModuleOf),
-// or when it is the module's brief or the fragment the module is written in:
-// a change to the rules a module is judged by is a change to the module. The
+// when one of the module's topics covers it, or when it is the module's
+// brief, a topic's brief or the fragment the module is written in: a change
+// to the rules a module is judged by is a change to the module. The
 // root spec file is no module's: it holds the system and, in a single-file
 // spec, every module, so any edit to it would touch them all.
 func moduleContexts(sp *spec.Spec, repo string, changes []Change) []ModuleContext {
@@ -168,17 +172,34 @@ func moduleContexts(sp *spec.Spec, repo string, changes []Change) []ModuleContex
 		if specFile == rel(sp.Path) {
 			specFile = ""
 		}
-		var files []string
+		topicBriefs := map[string]bool{}
+		for j := range m.Topics {
+			if b := m.Topics[j].Brief.Path; b != "" {
+				topicBriefs[rel(filepath.Join(sp.Dir, filepath.FromSlash(b)))] = true
+			}
+		}
+		var files, topics []string
 		for _, ch := range changes {
 			switch {
 			case owner[ch.Path] == m.Name,
-				ch.Path == brief || ch.Path == specFile,
-				owner[ch.Path] == "" && !m.Placed() && legacyMatch(m, ch.Path):
+				ch.Path == brief || ch.Path == specFile || topicBriefs[ch.Path],
+				owner[ch.Path] == "" && !m.Placed() && legacyMatch(m, ch.Path),
+				topicCovers(m, ch.Path):
 				files = append(files, ch.Path)
 			}
 		}
 		if len(files) == 0 {
 			continue
+		}
+		for j := range m.Topics {
+			t := &m.Topics[j]
+			for _, f := range files {
+				b := t.Brief.Path != "" && f == rel(filepath.Join(sp.Dir, filepath.FromSlash(t.Brief.Path)))
+				if b || t.Covers(f) {
+					topics = append(topics, t.Name)
+					break
+				}
+			}
 		}
 		out = append(out, ModuleContext{
 			Name:        m.Name,
@@ -188,10 +209,22 @@ func moduleContexts(sp *spec.Spec, repo string, changes []Change) []ModuleContex
 			Invariants:  m.Invariants,
 			Constraints: m.Constraints,
 			Brief:       brief,
+			Topics:      topics,
 			Files:       files,
 		})
 	}
 	return out
+}
+
+// topicCovers reports whether one of m's topics covers file: its rules bind
+// the file, so a change to it is a change to m, whichever module owns it.
+func topicCovers(m *spec.Module, file string) bool {
+	for j := range m.Topics {
+		if m.Topics[j].Covers(file) {
+			return true
+		}
+	}
+	return false
 }
 
 // legacyMatch guesses a file's module for a spec imported before modules
@@ -249,52 +282,10 @@ func matchAny(patterns []string, name string) bool {
 	return false
 }
 
-// Match reports whether a slash-separated path matches a glob pattern.
-// Segments follow path.Match; a segment that is exactly "**" matches zero or
-// more whole segments, so "**/*.go" matches "main.go" and "a/b/c.go", and
-// ".github/**" matches everything under .github.
-func Match(pattern, name string) bool {
-	return matchSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))
-}
-
-func matchSegments(pat, name []string) bool {
-	for len(pat) > 0 {
-		if pat[0] == "**" {
-			rest := pat[1:]
-			if len(rest) == 0 {
-				return true
-			}
-			for i := 0; i <= len(name); i++ {
-				if matchSegments(rest, name[i:]) {
-					return true
-				}
-			}
-			return false
-		}
-		if len(name) == 0 {
-			return false
-		}
-		if ok, _ := path.Match(pat[0], name[0]); !ok {
-			return false
-		}
-		pat, name = pat[1:], name[1:]
-	}
-	return len(name) == 0
-}
+// Match reports whether a slash-separated path matches a glob pattern
+// (spec.MatchPath: path.Match per segment, "**" for any number of them).
+func Match(pattern, name string) bool { return spec.MatchPath(pattern, name) }
 
 // checkPattern rejects patterns path.Match cannot parse, so a typo in
 // gates.yaml fails loudly instead of silently never matching.
-func checkPattern(p string) error {
-	if p == "" {
-		return fmt.Errorf("empty path pattern")
-	}
-	for _, seg := range strings.Split(p, "/") {
-		if seg == "**" {
-			continue
-		}
-		if _, err := path.Match(seg, ""); err != nil {
-			return fmt.Errorf("bad path pattern %q: %w", p, err)
-		}
-	}
-	return nil
-}
+func checkPattern(p string) error { return spec.CheckPathPattern(p) }

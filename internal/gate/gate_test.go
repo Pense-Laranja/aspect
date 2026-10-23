@@ -670,3 +670,69 @@ modules:
 		t.Errorf("module context = %+v", p.Modules)
 	}
 }
+
+func TestBuildPlanTopics(t *testing.T) {
+	c, err := LoadConfig(filepath.Join("..", "..", DefaultConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for p, body := range map[string]string{
+		"go.mod": "module example.com/shop\n",
+		"aspect.yaml": `aspect: 1
+system:
+  name: shop
+  intent: sell
+  module_path: example.com/shop
+  goals: [{id: G1, statement: Charge once.}]
+modules:
+  - name: pay
+    path: pay
+    intent: Charge money.
+    goals: [G1]
+    topics:
+      - {name: refunds, files: [admin/refund_*.go], brief: pay/rules/refunds.md, invariants: [Capped.]}
+      - {name: slips, files: [pay/slip*.go], invariants: [One slip.]}
+  - name: admin
+    path: admin
+    intent: Back office.
+    goals: [G1]
+`,
+		"pay/rules/refunds.md": "Refunds.\n",
+	} {
+		abs := filepath.Join(dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	modules := func(changes ...string) map[string]ModuleContext {
+		var ch []Change
+		for _, p := range changes {
+			ch = append(ch, Change{Path: p, Added: 1})
+		}
+		out := map[string]ModuleContext{}
+		for _, m := range BuildPlan(c, "b", "h", ch, dir, "aspect.yaml").Modules {
+			out[m.Name] = m
+		}
+		return out
+	}
+	// A file another module owns, which a topic covers, is a change to both.
+	got := modules("admin/refund_page.go")
+	if pay, ok := got["pay"]; !ok || !slices.Equal(pay.Topics, []string{"refunds"}) || !slices.Equal(pay.Files, []string{"admin/refund_page.go"}) {
+		t.Errorf("pay = %+v, want the refunds topic through admin/refund_page.go", got["pay"])
+	}
+	if _, ok := got["admin"]; !ok {
+		t.Errorf("admin, which owns the file, must stay in the plan: %v", got)
+	}
+	// A change to a topic's brief is a change to its module and that topic.
+	if pay := modules("pay/rules/refunds.md")["pay"]; !slices.Equal(pay.Topics, []string{"refunds"}) {
+		t.Errorf("pay = %+v, want the refunds topic through its brief", pay)
+	}
+	// A module's own file touches none of its topics unless one covers it.
+	if pay := modules("pay/charge.go")["pay"]; len(pay.Topics) != 0 || len(pay.Files) != 1 {
+		t.Errorf("pay = %+v, want its file and no topic", pay)
+	}
+}

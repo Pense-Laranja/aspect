@@ -624,32 +624,12 @@ func validateModules(c *collector, x *ctx) {
 				}
 				covered[g] = true
 			}
-			if len(m.Scenarios) == 0 && len(m.Invariants) == 0 {
+			if len(m.Scenarios) == 0 && len(m.Invariants) == 0 && !topicsHaveInvariants(m) {
 				c.add(Warning, p, "module %q has no scenarios or invariants; tests will be inferred from the interface only", m.Name)
 			}
 			seenInvariantID := map[string]bool{}
-			for j, inv := range m.Invariants {
-				invPath := fmt.Sprintf("%s.invariants[%d]", p, j)
-				stmt := strings.TrimSpace(inv.Statement)
-				if stmt == "" || stmt == "{}" {
-					c.add(Error, invPath, "invariant statement cannot be empty or '{}'")
-				}
-				if inv.ID != "" {
-					if !invariantIDRe.MatchString(inv.ID) {
-						c.add(Error, invPath+".id", "invalid invariant id %q; must contain only letters, digits, '_' or '-'", inv.ID)
-					}
-					if seenInvariantID[inv.ID] {
-						c.add(Error, invPath+".id", "duplicate invariant id %q in module %q", inv.ID, m.Name)
-					}
-					seenInvariantID[inv.ID] = true
-				}
-				if inv.Category != "" && !oneOf(inv.Category, invariantCategories) {
-					c.add(Error, invPath+".category", "unknown category %q; must be one of: %s", inv.Category, strings.Join(invariantCategories, ", "))
-				}
-				if inv.Enforcement != "" && !oneOf(inv.Enforcement, invariantEnforcements) {
-					c.add(Error, invPath+".enforcement", "unknown enforcement %q; must be test, ast, review, or invariant", inv.Enforcement)
-				}
-			}
+			validateInvariants(c, p, m.Name, m.Invariants, seenInvariantID)
+			validateTopics(c, p, m, seenInvariantID)
 			seenScenario := map[string]bool{}
 			for j, sc := range m.Scenarios {
 				sp := fmt.Sprintf("%s.scenarios[%d]", p, j)
@@ -923,4 +903,79 @@ func findCycle(names []string, deps map[string][]string) []string {
 		}
 	}
 	return nil
+}
+
+// validateInvariants checks a list of invariants written at p (a module's or
+// one of its topics'). seen holds the ids already used in the module: ids
+// are unique across a module and its topics, since a scenario names one by
+// id alone.
+func validateInvariants(c *collector, p, module string, invs []Invariant, seen map[string]bool) {
+	for j, inv := range invs {
+		invPath := fmt.Sprintf("%s.invariants[%d]", p, j)
+		stmt := strings.TrimSpace(inv.Statement)
+		if stmt == "" || stmt == "{}" {
+			c.add(Error, invPath, "invariant statement cannot be empty or '{}'")
+		}
+		if inv.ID != "" {
+			if !invariantIDRe.MatchString(inv.ID) {
+				c.add(Error, invPath+".id", "invalid invariant id %q; must contain only letters, digits, '_' or '-'", inv.ID)
+			}
+			if seen[inv.ID] {
+				c.add(Error, invPath+".id", "duplicate invariant id %q in module %q", inv.ID, module)
+			}
+			seen[inv.ID] = true
+		}
+		if inv.Category != "" && !oneOf(inv.Category, invariantCategories) {
+			c.add(Error, invPath+".category", "unknown category %q; must be one of: %s", inv.Category, strings.Join(invariantCategories, ", "))
+		}
+		if inv.Enforcement != "" && !oneOf(inv.Enforcement, invariantEnforcements) {
+			c.add(Error, invPath+".enforcement", "unknown enforcement %q; must be test, ast, review, or invariant", inv.Enforcement)
+		}
+	}
+}
+
+// validateTopics checks a module's topics, written at p: each has a name
+// unique in the module, at least one file pattern path.Match can parse, and
+// something to bind those files to.
+func validateTopics(c *collector, p string, m *Module, seenInvariantID map[string]bool) {
+	names := map[string]bool{}
+	for j := range m.Topics {
+		t := &m.Topics[j]
+		tp := fmt.Sprintf("%s.topics[%d]", p, j)
+		switch {
+		case t.Name == "":
+			c.add(Error, tp+".name", "is required")
+		case !identRe.MatchString(t.Name):
+			c.add(Error, tp+".name", "%q must match %s", t.Name, identRe)
+		case names[t.Name]:
+			c.add(Error, tp+".name", "duplicate topic name %q in module %q", t.Name, m.Name)
+		}
+		names[t.Name] = true
+		if len(t.Files) == 0 {
+			c.add(Error, tp+".files", "is required: a topic binds the files its patterns match, and no file without one")
+		}
+		for k, f := range t.Files {
+			if err := CheckPathPattern(f); err != nil {
+				c.add(Error, fmt.Sprintf("%s.files[%d]", tp, k), "%v", err)
+			}
+		}
+		if len(t.Constraints) == 0 && len(t.Invariants) == 0 && t.Brief.Path == "" {
+			c.add(Warning, tp, "topic %q has no constraints, invariants or brief; it binds nothing", t.Name)
+		}
+		for k, con := range t.Constraints {
+			if strings.TrimSpace(con) == "" {
+				c.add(Error, fmt.Sprintf("%s.constraints[%d]", tp, k), "cannot be empty")
+			}
+		}
+		validateInvariants(c, tp, m.Name, t.Invariants, seenInvariantID)
+	}
+}
+
+func topicsHaveInvariants(m *Module) bool {
+	for _, t := range m.Topics {
+		if len(t.Invariants) > 0 {
+			return true
+		}
+	}
+	return false
 }

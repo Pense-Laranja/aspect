@@ -114,7 +114,7 @@ func TestRenderNothing(t *testing.T) {
 func TestRenderDropsAllOfAModuleWhoseRulesDoNotFit(t *testing.T) {
 	s := load(t)
 	s.Module("store").Scenarios = []spec.Scenario{{ID: "S9", When: "w", Then: "t"}}
-	pay := len(core(s, s.Module("payments")))
+	pay := len(core(s, s.Module("payments"), nil))
 	// Room for payments' rules, then less than minCutRoom left.
 	budget := (pay + omittedNoteReserve + minCutRoom/2) / CharsPerToken
 	out := Render(s, []string{"payments", "store"}, Options{Budget: budget, OmitSystem: true})
@@ -153,5 +153,93 @@ func TestRenderCutsAtCharactersAndShortensTheNote(t *testing.T) {
 	note := omittedNote(many)
 	if len(note) > omittedNoteReserve+60 || !strings.Contains(note, "more") || !strings.Contains(note, "module_number_0") {
 		t.Errorf("note (%d chars): %s", len(note), note)
+	}
+}
+
+const topicSrc = `
+aspect: 1
+system:
+  name: shop
+  intent: sell
+  module_path: example.com/shop
+  goals: [{id: G1, statement: Charge once.}]
+modules:
+  - name: payments
+    path: modules/payments
+    intent: Charge money.
+    goals: [G1]
+    invariants: [One live charge per order.]
+    topics:
+      - name: refunds
+        intent: Giving money back.
+        files: [modules/payments/refund*.go, admin/refund_*.go]
+        constraints: [A refund names its charge.]
+        invariants: [{id: REF-CAP, statement: A refund never exceeds its charge.}]
+      - name: slips
+        intent: Boleto slips.
+        files: [modules/payments/slip*.go]
+        invariants: [One open slip per order.]
+`
+
+func loadTopics(t *testing.T) *spec.Spec {
+	t.Helper()
+	s, err := spec.Parse([]byte(topicSrc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := s.Module("payments")
+	m.Brief = spec.Brief{Path: "briefs/payments.md", Text: "The index of the payment rules."}
+	m.Topics[0].Brief = spec.Brief{Path: "briefs/refunds.md", Text: "Refunds go back through the charging gateway."}
+	m.Topics[1].Brief = spec.Brief{Path: "briefs/slips.md", Text: "A slip is cancelled before another is issued."}
+	return s
+}
+
+func TestRenderShowsTheTopicsOfTheFiles(t *testing.T) {
+	s := loadTopics(t)
+	out := Render(s, []string{"payments"}, Options{Files: []string{"admin/refund_page.go"}})
+	for _, want := range []string{
+		"### Topic refunds (binds modules/payments/refund*.go, admin/refund_*.go)", "Giving money back.",
+		"- A refund names its charge.", "cite as payments.topics.refunds.invariants[i]", "- [REF-CAP] A refund never exceeds its charge.",
+		"### Brief of topic refunds (briefs/refunds.md)", "charging gateway",
+		"Topics not shown, since none of the files here is theirs", "- slips: Boleto slips.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"One open slip per order.", "cancelled before another"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("the slips topic covers none of the files, yet %q is shown:\n%s", unwanted, out)
+		}
+	}
+	if !(strings.Index(out, "### Topic refunds") < strings.Index(out, "### Brief (") &&
+		strings.Index(out, "### Brief (") < strings.Index(out, "### Brief of topic refunds")) {
+		t.Errorf("want the module's rules, the topic's rules, the module's brief, then the topic's brief:\n%s", out)
+	}
+
+	// A topic's brief is shown when the brief itself is what changed.
+	if out := Render(s, []string{"payments"}, Options{Files: []string{"briefs/slips.md"}}); !strings.Contains(out, "One open slip per order.") {
+		t.Errorf("a change to a topic's brief must show that topic:\n%s", out)
+	}
+	// No files: every topic is shown; empty files: none is, and both are named.
+	if out := Render(s, []string{"payments"}, Options{}); !strings.Contains(out, "REF-CAP") || !strings.Contains(out, "One open slip per order.") || strings.Contains(out, "Topics not shown") {
+		t.Errorf("nil Files must show every topic:\n%s", out)
+	}
+	if out := Render(s, []string{"payments"}, Options{Files: []string{}}); strings.Contains(out, "REF-CAP") || !strings.Contains(out, "- refunds: Giving money back.") {
+		t.Errorf("empty Files must show no topic and name them all:\n%s", out)
+	}
+}
+
+func TestRenderKeepsTopicRulesBeforeBriefs(t *testing.T) {
+	s := loadTopics(t)
+	s.Module("payments").Brief.Text = strings.Repeat("A long index of the payment rules. ", 300)
+	full := Render(s, []string{"payments"}, Options{Files: []string{"admin/refund_page.go"}})
+	budget := (strings.Index(full, "### Brief (") + 400) / CharsPerToken
+	out := Render(s, []string{"payments"}, Options{Files: []string{"admin/refund_page.go"}, Budget: budget})
+	if !strings.Contains(out, "REF-CAP") {
+		t.Errorf("the topic's rules outrank the briefs and must fit:\n%s", out)
+	}
+	if !strings.Contains(out, "Left out to fit the size limit: brief of payments (briefs/payments.md); brief of payments topic refunds") {
+		t.Errorf("the briefs that did not fit must be named:\n%s", out)
 	}
 }

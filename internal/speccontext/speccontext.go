@@ -10,11 +10,19 @@
 // intent, goals, constraints and invariants, then its operations and
 // scenarios, then its brief. What does not fit is named at the end, never
 // dropped silently.
+//
+// A module may split its rules into topics, each binding only the files its
+// patterns match (spec.Topic). Given the files a reader is about (a
+// reviewer's share of a diff), the rendering shows the topics that cover
+// them, after the module's own rules and brief in each rank, and names the
+// others in a line, so a module whose rules outgrow the budget is shown the
+// ones that bind the change rather than all of them cut short.
 package speccontext
 
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/eideroliveira/aspect/internal/spec"
@@ -44,8 +52,12 @@ type Options struct {
 	// OmitSystem leaves out the system's constraints, which bind every
 	// module.
 	OmitSystem bool
-	// OmitBriefs leaves out the modules' briefs.
+	// OmitBriefs leaves out the modules' briefs and their topics' briefs.
 	OmitBriefs bool
+	// Files are the files the reader is about, relative to the repository
+	// root: only the topics that cover one of them (or whose brief is one of
+	// them) are shown. Nil shows every topic.
+	Files []string
 }
 
 // part is one piece the budget decides on.
@@ -64,9 +76,11 @@ type kind int
 const (
 	kindSystem kind = iota
 	kindCore
+	kindTopic
 	kindOperations
 	kindScenarios
 	kindBrief
+	kindTopicBrief
 )
 
 // Render renders the named modules of s, in the order given; names the spec
@@ -89,8 +103,18 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 		}
 		parts = append(parts, part{module: -1, kind: kindSystem, label: "system constraints", text: b.String(), truncatable: true})
 	}
+	shown := make([][]*spec.Topic, len(mods))
 	for i, m := range mods {
-		parts = append(parts, part{module: i, kind: kindCore, label: "the rules of " + m.Name, text: core(s, m), truncatable: true})
+		var hidden []*spec.Topic
+		shown[i], hidden = topicsFor(s, m, opt.Files)
+		parts = append(parts, part{module: i, kind: kindCore, label: "the rules of " + m.Name, text: core(s, m, hidden), truncatable: true})
+	}
+	for i, m := range mods {
+		for _, t := range shown[i] {
+			if text := topicRules(m, t); text != "" {
+				parts = append(parts, part{module: i, kind: kindTopic, label: "the rules of " + m.Name + " topic " + t.Name, text: text, truncatable: true})
+			}
+		}
 	}
 	for i, m := range mods {
 		if t := operations(m); t != "" {
@@ -103,9 +127,18 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 	if !opt.OmitBriefs {
 		for i, m := range mods {
 			if text := strings.TrimSpace(m.Brief.Text); text != "" {
-				where := briefPath(s, m)
+				where := briefPath(s, m.Brief.Path)
 				parts = append(parts, part{module: i, kind: kindBrief, label: "brief of " + m.Name + " (" + where + ")",
 					text: fmt.Sprintf("### Brief (%s)\n\nThe owner's longer description of the module; binding where it is more specific than the rules above.\n\n%s\n", where, text)})
+			}
+		}
+		for i, m := range mods {
+			for _, t := range shown[i] {
+				if text := strings.TrimSpace(t.Brief.Text); text != "" {
+					where := briefPath(s, t.Brief.Path)
+					parts = append(parts, part{module: i, kind: kindTopicBrief, label: "brief of " + m.Name + " topic " + t.Name + " (" + where + ")",
+						text: fmt.Sprintf("### Brief of topic %s (%s)\n\nThe owner's longer description of what the topic binds; binding where it is more specific than the rules above.\n\n%s\n", t.Name, where, text)})
+				}
 			}
 		}
 	}
@@ -200,9 +233,57 @@ func runeStart(s string, n int) int {
 	return n
 }
 
-// core is what binds a module: why it exists, the goals it answers for, and
-// its constraints and invariants.
-func core(s *spec.Spec, m *spec.Module) string {
+// topicsFor splits m's topics into those shown for files (all of them when
+// files is nil) and those not.
+func topicsFor(s *spec.Spec, m *spec.Module, files []string) (shown, hidden []*spec.Topic) {
+	for j := range m.Topics {
+		t := &m.Topics[j]
+		if files == nil || t.CoversAny(files) || (t.Brief.Path != "" && slices.Contains(files, briefPath(s, t.Brief.Path))) {
+			shown = append(shown, t)
+		} else {
+			hidden = append(hidden, t)
+		}
+	}
+	return shown, hidden
+}
+
+// topicRules is what binds the files a topic covers.
+func topicRules(m *spec.Module, t *spec.Topic) string {
+	if len(t.Constraints) == 0 && len(t.Invariants) == 0 && t.Intent == "" {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "### Topic %s (binds %s)\n", t.Name, strings.Join(t.Files, ", "))
+	if t.Intent != "" {
+		fmt.Fprintf(&b, "\n%s\n", oneLine(t.Intent))
+	}
+	if len(t.Constraints) > 0 {
+		b.WriteString("\nConstraints:\n")
+		for _, c := range t.Constraints {
+			fmt.Fprintf(&b, "- %s\n", oneLine(c))
+		}
+	}
+	if len(t.Invariants) > 0 {
+		b.WriteString("\nInvariants (cite as " + m.Name + ".topics." + t.Name + ".invariants[i], or the id):\n")
+		writeInvariants(&b, t.Invariants)
+	}
+	return b.String()
+}
+
+func writeInvariants(b *strings.Builder, invs []spec.Invariant) {
+	for i, inv := range invs {
+		id := inv.ID
+		if id == "" {
+			id = fmt.Sprintf("%d", i)
+		}
+		fmt.Fprintf(b, "- [%s] %s\n", id, oneLine(inv.Statement))
+	}
+}
+
+// core is what binds a module: why it exists, the goals it answers for, its
+// constraints and invariants, and the topics not shown (hidden), named so a
+// reader knows those rules exist.
+func core(s *spec.Spec, m *spec.Module, hidden []*spec.Topic) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Module %s", m.Name)
 	if m.Path != "" {
@@ -230,12 +311,16 @@ func core(s *spec.Spec, m *spec.Module) string {
 	}
 	if len(m.Invariants) > 0 {
 		b.WriteString("\nInvariants (cite as " + m.Name + ".invariants[i], or the id):\n")
-		for i, inv := range m.Invariants {
-			id := inv.ID
-			if id == "" {
-				id = fmt.Sprintf("%d", i)
+		writeInvariants(&b, m.Invariants)
+	}
+	if len(hidden) > 0 {
+		b.WriteString("\nTopics not shown, since none of the files here is theirs (their rules bind other files):\n")
+		for _, t := range hidden {
+			if t.Intent != "" {
+				fmt.Fprintf(&b, "- %s: %s\n", t.Name, oneLine(t.Intent))
+			} else {
+				fmt.Fprintf(&b, "- %s\n", t.Name)
 			}
-			fmt.Fprintf(&b, "- [%s] %s\n", id, oneLine(inv.Statement))
 		}
 	}
 	return b.String()
@@ -279,19 +364,19 @@ func scenarios(m *spec.Module) string {
 	return b.String()
 }
 
-// briefPath shows where a brief is: relative to the repository when the spec
-// knows it, else as written.
-func briefPath(s *spec.Spec, m *spec.Module) string {
+// briefPath shows where a brief is (p, as the spec writes it): relative to
+// the repository when the spec knows it, else as written.
+func briefPath(s *spec.Spec, p string) string {
 	if s.Root == "" || s.Dir == "" {
-		return m.Brief.Path
+		return p
 	}
-	abs, err := filepath.Abs(filepath.Join(s.Dir, filepath.FromSlash(m.Brief.Path)))
+	abs, err := filepath.Abs(filepath.Join(s.Dir, filepath.FromSlash(p)))
 	if err != nil {
-		return m.Brief.Path
+		return p
 	}
 	rel, err := filepath.Rel(s.Root, abs)
 	if err != nil {
-		return m.Brief.Path
+		return p
 	}
 	return filepath.ToSlash(rel)
 }

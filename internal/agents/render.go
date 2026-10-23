@@ -190,6 +190,11 @@ func renderModule(t Task, heading string) string {
 	if text := strings.TrimSpace(m.Brief.Text); text != "" {
 		fmt.Fprintf(&b, "## Module brief (%s)\n\nThe owner's own description of this module. It elaborates the spec above and is binding where it is more specific; where the two conflict, say so in concerns rather than choosing silently.\n\n%s\n\n", m.Brief.Path, text)
 	}
+	for _, tp := range m.Topics {
+		if text := strings.TrimSpace(tp.Brief.Text); text != "" {
+			fmt.Fprintf(&b, "## Brief of topic %s (%s)\n\nThe owner's description of what the topic binds (the files matching %s). It elaborates the topic's rules above and is binding where it is more specific.\n\n%s\n\n", tp.Name, tp.Brief.Path, strings.Join(tp.Files, ", "), text)
+		}
+	}
 
 	if len(m.Entities) > 0 {
 		var ents []spec.Entity
