@@ -473,11 +473,38 @@ func headOf(t *testing.T, repo string) string {
 	return strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
 }
 
+// checkRun is what publish.sh runs on a run directory: `aspect gate check`
+// on its plan.json and reports.
+func checkRun(t *testing.T, repo, dir string) (*gate.Plan, *gate.Result) {
+	t.Helper()
+	var plan gate.Plan
+	b, err := os.ReadFile(filepath.Join(dir, "plan.json"))
+	if err != nil || json.Unmarshal(b, &plan) != nil {
+		t.Fatalf("plan.json: %v", err)
+	}
+	cfg, err := gate.LoadConfig(filepath.Join(repo, gate.DefaultConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := map[string]gate.Input{}
+	for _, a := range plan.Agents {
+		b, err := os.ReadFile(filepath.Join(dir, a.Agent+".json"))
+		inputs[a.Agent] = gate.Input{Data: b, Err: err}
+	}
+	return &plan, gate.Check(cfg, &plan, inputs, false)
+}
+
+func carriedFrom(t *testing.T, dir string) map[string]any {
+	t.Helper()
+	c, _ := readStatus(t, dir)["carried_from"].(map[string]any)
+	return c
+}
+
 func TestMergingTheBaseCarriesTheVerdict(t *testing.T) {
 	repo := testRepo(t)
 	writeFile(t, filepath.Join(repo, ".claude/review/publish.sh"), "#!/bin/sh\necho \"published $*\"\n")
 	first := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean}).run(t, Options{})
-	firstHead := headOf(t, repo)
+	firstBase, firstHead := readStatus(t, first.RunDir)["base"], headOf(t, repo)
 	mergeMain(t, repo, "c.go", "package a\n\nfunc C() {}\n")
 	head := headOf(t, repo)
 
@@ -487,38 +514,25 @@ func TestMergingTheBaseCarriesTheVerdict(t *testing.T) {
 		t.Fatalf("second = %+v, calls = %d", second, broken.model.callCount())
 	}
 	// The carried run names the head it is for, so publish.sh, which posts
-	// only a run of the pull request's head, accepts it.
-	var plan gate.Plan
-	b, err := os.ReadFile(filepath.Join(second.RunDir, "plan.json"))
-	if err != nil || json.Unmarshal(b, &plan) != nil {
-		t.Fatalf("plan.json: %v", err)
-	}
+	// only a run of the pull request's head, accepts it, and gate check
+	// passes its reports.
+	plan, check := checkRun(t, repo, second.RunDir)
 	if plan.Head != head || plan.CarriedFrom == nil || plan.CarriedFrom.Run != first.RunID || plan.CarriedFrom.Head != firstHead {
 		t.Fatalf("plan = head %s, carried %+v", plan.Head, plan.CarriedFrom)
+	}
+	if check.Outcome != gate.Pass {
+		t.Errorf("gate check of the carried run = %+v", check)
 	}
 	if !strings.Contains(second.Rendered, "## Review gates: pass") || !strings.Contains(second.Rendered, "**Verdict carried** from run `"+first.RunID+"`") ||
 		!strings.Contains(second.Rendered, head[:12]) || strings.Contains(second.Rendered, gate.StatusInvalid) {
 		t.Errorf("rendered = %s", second.Rendered)
 	}
-	// What publish.sh runs: `aspect gate check` on the carried run's files.
-	cfg, err := gate.LoadConfig(filepath.Join(repo, gate.DefaultConfigPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	inputs := map[string]gate.Input{}
-	for _, a := range plan.Agents {
-		b, err := os.ReadFile(filepath.Join(second.RunDir, a.Agent+".json"))
-		inputs[a.Agent] = gate.Input{Data: b, Err: err}
-	}
-	if res := gate.Check(cfg, &plan, inputs, false); res.Outcome != gate.Pass {
-		t.Errorf("gate check of the carried run = %+v", res)
-	}
 	if !strings.HasPrefix(second.Published, "published "+second.RunDir) {
 		t.Errorf("published = %q", second.Published)
 	}
-	st := readStatus(t, second.RunDir)
-	if st["head"] != head || st["carried_from"] != first.RunID || st["carried_from_head"] != firstHead || agentState(t, second.RunDir, "red-team") != stateCompleted {
-		t.Errorf("status = head %v, carried %v from %v", st["head"], st["carried_from"], st["carried_from_head"])
+	st, c := readStatus(t, second.RunDir), carriedFrom(t, second.RunDir)
+	if st["head"] != head || c["run"] != first.RunID || c["base"] != firstBase || c["head"] != firstHead || agentState(t, second.RunDir, "red-team") != stateCompleted {
+		t.Errorf("status = head %v, carried %v", st["head"], c)
 	}
 	// The run it carries is left as it was.
 	if readStatus(t, first.RunDir)["head"] != firstHead {
@@ -528,6 +542,86 @@ func TestMergingTheBaseCarriesTheVerdict(t *testing.T) {
 	third := broken.run(t, Options{})
 	if !third.Cached || third.RunID != second.RunID || third.CarriedFrom != first.RunID {
 		t.Fatalf("third = %+v", third)
+	}
+}
+
+func TestMergingTheBaseTwiceCarriesTheRunThatReviewed(t *testing.T) {
+	repo := testRepo(t)
+	first := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean}).run(t, Options{})
+	broken := newTestEngine(t, repo, map[string]any{"security-reviewer": errors.New("must not be called"), "red-team": errors.New("must not be called")})
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := broken.run(t, Options{})
+	mergeMain(t, repo, "d.go", "package a\n")
+	// current_run.json names the carried run, so it is the one found: what
+	// it passes on is the run whose reports it holds.
+	third := broken.run(t, Options{})
+	if !third.Cached || third.RunID == second.RunID || third.CarriedFrom != first.RunID || broken.model.callCount() != 0 {
+		t.Fatalf("third = %+v, calls = %d", third, broken.model.callCount())
+	}
+	if plan, check := checkRun(t, repo, third.RunDir); check.Outcome != gate.Pass || plan.Head != headOf(t, repo) {
+		t.Errorf("gate check = %+v, head %s", check, plan.Head)
+	}
+	if strings.Contains(third.Rendered, gate.StatusInvalid) || !strings.Contains(third.Rendered, "## Review gates: pass") {
+		t.Errorf("rendered = %s", third.Rendered)
+	}
+}
+
+func TestACarriedBlockStaysBlocked(t *testing.T) {
+	repo := testRepo(t)
+	first := newTestEngine(t, repo, map[string]any{
+		"security-reviewer": `{"summary": "found one", "findings": [{"severity": "critical", "category": "security", "title": "SQL injection", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.95}]}`,
+		"red-team":          clean,
+	}).run(t, Options{})
+	if first.Outcome != OutcomeBlock {
+		t.Fatalf("first outcome = %s", first.Outcome)
+	}
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := newTestEngine(t, repo, nil).run(t, Options{})
+	if second.CarriedFrom != first.RunID || second.Outcome != OutcomeBlock || !strings.Contains(second.Rendered, "SQL injection") {
+		t.Fatalf("second = %+v", second)
+	}
+	if _, check := checkRun(t, repo, second.RunDir); check.Outcome != gate.Block {
+		t.Errorf("gate check = %+v", check)
+	}
+	findings, _ := readStatus(t, second.RunDir)["findings"].([]any)
+	if len(findings) != 1 || findings[0].(map[string]any)["run_id"] != second.RunID {
+		t.Errorf("status findings = %v", findings)
+	}
+}
+
+func TestMergingAChangedGatesConfigReviewsAgain(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	// The same agents on the same files, under a gates.yaml that now
+	// classifies findings differently.
+	mergeMain(t, repo, ".claude/review/gates.yaml", testGates+"thresholds:\n  block: [critical, high, medium]\n")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+func TestAFailedCarryReviewsAfresh(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	report := filepath.Join(first.RunDir, "red-team.json")
+	if err := os.Chmod(report, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(report, 0o644) })
+	if _, err := os.ReadFile(report); err == nil {
+		t.Skip("the report is still readable (running as root?)")
+	}
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.Outcome != OutcomePass {
+		t.Fatalf("second = %+v", second)
+	}
+	// The carry's half-written run was removed: the two runs are all there is.
+	if dirs, _ := filepath.Glob(filepath.Join(repo, ".review", "local-*")); len(dirs) != 2 {
+		t.Errorf("runs = %v", dirs)
 	}
 }
 

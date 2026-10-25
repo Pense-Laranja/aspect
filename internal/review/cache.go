@@ -54,7 +54,7 @@ func (e *Engine) findCachedRun(ctx context.Context, repo string, plan *gate.Plan
 		}
 	}
 
-	carry := ""
+	carryFrom := ""
 	for _, dir := range candidates {
 		var status struct {
 			State    string `json:"state"`
@@ -98,9 +98,8 @@ func (e *Engine) findCachedRun(ctx context.Context, repo string, plan *gate.Plan
 			prevHash = status.DiffHash
 		}
 		if prev.Head != plan.Head {
-			if carry == "" && prevHash == diffHash && prev.Head != "" &&
-				readTrimmed(filepath.Join(dir, inputsHashFile)) == inputsHash && isAncestor(ctx, repo, prev.Head, plan.Head) {
-				carry = dir
+			if carryFrom == "" && carriable(ctx, repo, dir, prev.Head, plan.Head, prevHash, diffHash, inputsHash) {
+				carryFrom = dir
 			}
 			continue
 		}
@@ -122,10 +121,21 @@ func (e *Engine) findCachedRun(ctx context.Context, repo string, plan *gate.Plan
 			}
 		}
 	}
-	return carry, carry != ""
+	return carryFrom, carryFrom != ""
+}
+
+// carriable says whether the finished run in dir, which judged prevHead, may
+// carry its verdict to head: the same diff (prevHash), the same reviewer
+// inputs (its inputs.hash; a run without one never carries), and a head that
+// descends from the one it judged.
+func carriable(ctx context.Context, repo, dir, prevHead, head, prevHash, diffHash, inputsHash string) bool {
+	return prevHead != "" && prevHash != "" && prevHash == diffHash &&
+		readTrimmed(filepath.Join(dir, inputsHashFile)) == inputsHash &&
+		isAncestor(ctx, repo, prevHead, head)
 }
 
 // isAncestor reports whether commit a is an ancestor of b (or b itself).
+// Any failure of git reads as "no": a verdict is never carried on a doubt.
 func isAncestor(ctx context.Context, repo, a, b string) bool {
 	_, err := gitx.Run(ctx, repo, "merge-base", "--is-ancestor", a, b)
 	return err == nil
@@ -148,7 +158,9 @@ const inputsHashFile = "inputs.hash"
 // mode, files and modules, its definition, and the spec it is shown, with
 // the note saying what of the spec was not. A run whose inputs hash and diff
 // hash are this head's asked the model the same questions about the same
-// change.
+// change. It names runAgent's inputs rather than hashing the prompt runAgent
+// builds, which splits the diff into parts and adds the pull request's
+// description: a new input to the prompt belongs here too.
 func (e *Engine) inputsHash(repo string, plan *gate.Plan, specOf func(gate.Planned) string) string {
 	h := sha256.New()
 	field := func(s string) {
@@ -178,11 +190,13 @@ func (e *Engine) inputsHash(repo string, plan *gate.Plan, specOf func(gate.Plann
 // status with this head's run id, refs and time, not yet published. The new
 // run is then reused like any other, so it is what publish.sh posts on this
 // head: the record names the head it is for, and the run it came from.
-func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash string) (string, error) {
-	var prev struct {
-		Base string `json:"base"`
-		Head string `json:"head"`
-	}
+//
+// A run that was itself carried passes on what it carried: its reports name
+// the range of the run that reviewed, so the new plan names that run and
+// range, however many merges of the base lie between. On an error the new
+// run directory is removed; the caller then reviews afresh.
+func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash string) (dir string, err error) {
+	var prev gate.Plan
 	pb, err := os.ReadFile(filepath.Join(from, "plan.json"))
 	if err != nil {
 		return "", err
@@ -190,10 +204,22 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	if err := json.Unmarshal(pb, &prev); err != nil {
 		return "", err
 	}
+	origin := prev.CarriedFrom
+	if origin == nil {
+		origin = &gate.Carried{Run: filepath.Base(from), Base: prev.Base, Head: prev.Head}
+	}
 	runID, dir, err := e.newRunDir(repo)
 	if err != nil {
 		return "", err
 	}
+	// The directory made here, not the result: a `return "", err` has set
+	// the result to "" by the time this runs.
+	made := dir
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(made)
+		}
+	}()
 	entries, err := os.ReadDir(from)
 	if err != nil {
 		return "", err
@@ -214,10 +240,12 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 		}
 	}
 	p := *plan
-	p.CarriedFrom = &gate.Carried{Run: filepath.Base(from), Base: prev.Base, Head: prev.Head}
+	p.CarriedFrom = origin
 	if err := writeJSON(filepath.Join(dir, "plan.json"), &p); err != nil {
 		return "", err
 	}
+	// Without them the carried run is still a sound run of this head; it
+	// only cannot be carried on or reused by hash.
 	_ = os.WriteFile(filepath.Join(dir, "diff.hash"), []byte(diffHash), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, inputsHashFile), []byte(inputsHash), 0o644)
 
@@ -235,8 +263,12 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	status.Set("head", plan.Head)
 	status.Set("diff_hash", diffHash)
 	status.Set("started_at", now)
-	status.Set("carried_from", filepath.Base(from))
-	status.Set("carried_from_head", prev.Head)
+	// The same object as plan.json's carried_from.
+	carried := NewObject()
+	carried.Set("run", origin.Run)
+	carried.Set("base", origin.Base)
+	carried.Set("head", origin.Head)
+	status.Set("carried_from", carried)
 	status.Set("pr", nil)
 	status.Set("pr_url", nil)
 	status.Set("published_status", nil)

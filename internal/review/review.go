@@ -154,11 +154,13 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	if !opt.Force {
 		if dir, carried := e.findCachedRun(ctx, repo, plan, diff, diffHash, inputsHash); dir != "" {
 			if carried {
-				if dir, err = e.carry(repo, dir, plan, diffHash, inputsHash); err != nil {
-					return nil, err
-				}
+				// A carry is a saving, never a requirement: when it cannot be
+				// written, the change is reviewed afresh.
+				dir, _ = e.carry(repo, dir, plan, diffHash, inputsHash)
 			}
-			return e.reuse(ctx, repo, dir, cfg, plan, pr, opt.Publish)
+			if dir != "" {
+				return e.reuse(ctx, repo, dir, cfg, plan, pr, opt.Publish)
+			}
 		}
 	}
 

@@ -98,7 +98,13 @@ func (p *Plan) reviews(base, head string) bool {
 		return true
 	}
 	c := p.CarriedFrom
-	return c != nil && c.Base != "" && c.Head != "" && base != "" && head != "" && SameRev(base, c.Base) && SameRev(head, c.Head)
+	if c == nil {
+		return false
+	}
+	// SameRev takes an empty revision for any revision; a carried range must
+	// be named in full on both sides, or a report naming none would pass.
+	named := c.Base != "" && c.Head != "" && base != "" && head != ""
+	return named && SameRev(base, c.Base) && SameRev(head, c.Head)
 }
 
 // Planned is one agent the orchestrator must run.
