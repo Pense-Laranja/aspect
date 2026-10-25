@@ -74,6 +74,31 @@ type Plan struct {
 	// rendered result repeats it, so a review that did not see the rules is
 	// never taken for one that did. Set by the review engine.
 	SpecNote string `json:"spec_note,omitempty"`
+	// CarriedFrom names the run whose verdict this plan carries: one that
+	// judged an earlier head of the same branch, whose diff against its merge
+	// base is byte for byte this one's and whose reviewers were given the
+	// same definitions and spec. No agent ran on this head; the rendered
+	// result says so. Set by the review engine.
+	CarriedFrom *Carried `json:"carried_from,omitempty"`
+}
+
+// Carried is the run a plan's verdict was carried from, and the range it
+// judged. Its reports are carried as they were, so they name that range.
+type Carried struct {
+	Run  string `json:"run"`
+	Base string `json:"base"`
+	Head string `json:"head"`
+}
+
+// reviews says whether a report of base...head belongs to the plan: it
+// reviews the plan's range, or, for a carried plan, the range of the run it
+// was carried from (whose diff is the plan's, byte for byte).
+func (p *Plan) reviews(base, head string) bool {
+	if SameRev(base, p.Base) && SameRev(head, p.Head) {
+		return true
+	}
+	c := p.CarriedFrom
+	return c != nil && c.Base != "" && c.Head != "" && base != "" && head != "" && SameRev(base, c.Base) && SameRev(head, c.Head)
 }
 
 // Planned is one agent the orchestrator must run.

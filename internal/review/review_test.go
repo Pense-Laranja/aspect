@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eideroliveira/aspect/internal/gate"
 	"github.com/eideroliveira/aspect/internal/llm"
 	"github.com/eideroliveira/aspect/internal/spec"
 )
@@ -450,6 +451,124 @@ func TestIncompletePreviousRunIsNotReused(t *testing.T) {
 	te.model.answers["red-team"] = clean
 	second := te.run(t, Options{})
 	if second.Cached || second.RunID == first.RunID || second.Outcome != OutcomePass {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+// mergeMain commits a file on main, as another branch's merge would, and
+// merges main into feature: the branch's own change and its diff stay what
+// they were.
+func mergeMain(t *testing.T, repo, path, content string) {
+	t.Helper()
+	gitIn(t, repo, "checkout", "-q", "main")
+	writeFile(t, filepath.Join(repo, path), content)
+	gitIn(t, repo, "add", path)
+	gitIn(t, repo, "commit", "-q", "-m", "elsewhere on main")
+	gitIn(t, repo, "checkout", "-q", "feature")
+	gitIn(t, repo, "merge", "-q", "--no-edit", "main")
+}
+
+func headOf(t *testing.T, repo string) string {
+	t.Helper()
+	return strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
+}
+
+func TestMergingTheBaseCarriesTheVerdict(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, ".claude/review/publish.sh"), "#!/bin/sh\necho \"published $*\"\n")
+	first := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean}).run(t, Options{})
+	firstHead := headOf(t, repo)
+	mergeMain(t, repo, "c.go", "package a\n\nfunc C() {}\n")
+	head := headOf(t, repo)
+
+	broken := newTestEngine(t, repo, map[string]any{"security-reviewer": errors.New("must not be called"), "red-team": errors.New("must not be called")})
+	second := broken.run(t, Options{Publish: true})
+	if !second.Cached || second.CarriedFrom != first.RunID || second.RunID == first.RunID || second.Outcome != OutcomePass || broken.model.callCount() != 0 {
+		t.Fatalf("second = %+v, calls = %d", second, broken.model.callCount())
+	}
+	// The carried run names the head it is for, so publish.sh, which posts
+	// only a run of the pull request's head, accepts it.
+	var plan gate.Plan
+	b, err := os.ReadFile(filepath.Join(second.RunDir, "plan.json"))
+	if err != nil || json.Unmarshal(b, &plan) != nil {
+		t.Fatalf("plan.json: %v", err)
+	}
+	if plan.Head != head || plan.CarriedFrom == nil || plan.CarriedFrom.Run != first.RunID || plan.CarriedFrom.Head != firstHead {
+		t.Fatalf("plan = head %s, carried %+v", plan.Head, plan.CarriedFrom)
+	}
+	if !strings.Contains(second.Rendered, "## Review gates: pass") || !strings.Contains(second.Rendered, "**Verdict carried** from run `"+first.RunID+"`") ||
+		!strings.Contains(second.Rendered, head[:12]) || strings.Contains(second.Rendered, gate.StatusInvalid) {
+		t.Errorf("rendered = %s", second.Rendered)
+	}
+	// What publish.sh runs: `aspect gate check` on the carried run's files.
+	cfg, err := gate.LoadConfig(filepath.Join(repo, gate.DefaultConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := map[string]gate.Input{}
+	for _, a := range plan.Agents {
+		b, err := os.ReadFile(filepath.Join(second.RunDir, a.Agent+".json"))
+		inputs[a.Agent] = gate.Input{Data: b, Err: err}
+	}
+	if res := gate.Check(cfg, &plan, inputs, false); res.Outcome != gate.Pass {
+		t.Errorf("gate check of the carried run = %+v", res)
+	}
+	if !strings.HasPrefix(second.Published, "published "+second.RunDir) {
+		t.Errorf("published = %q", second.Published)
+	}
+	st := readStatus(t, second.RunDir)
+	if st["head"] != head || st["carried_from"] != first.RunID || st["carried_from_head"] != firstHead || agentState(t, second.RunDir, "red-team") != stateCompleted {
+		t.Errorf("status = head %v, carried %v from %v", st["head"], st["carried_from"], st["carried_from_head"])
+	}
+	// The run it carries is left as it was.
+	if readStatus(t, first.RunDir)["head"] != firstHead {
+		t.Error("the carried run was rewritten")
+	}
+	// Asked again on the same head, the carried run is reused as it is.
+	third := broken.run(t, Options{})
+	if !third.Cached || third.RunID != second.RunID || third.CarriedFrom != first.RunID {
+		t.Fatalf("third = %+v", third)
+	}
+}
+
+func TestMergingAChangedAgentReviewsAgain(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	// main changed what red-team is asked: the diff is the same, the
+	// question is not.
+	mergeMain(t, repo, ".claude/agents/red-team.md", "---\nname: red-team\n---\nred-team\n\nBe stricter.\n")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+func TestAnIdenticalDiffOnAnotherLineIsNotCarried(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	// The same change on a branch of its own: its head does not descend
+	// from the reviewed one.
+	gitIn(t, repo, "checkout", "-q", "-b", "other", "main")
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() {}\n")
+	gitIn(t, repo, "commit", "-q", "-am", "the same change, apart")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+func TestARunWithoutInputsHashIsNotCarried(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	if err := os.Remove(filepath.Join(first.RunDir, inputsHashFile)); err != nil {
+		t.Fatal(err)
+	}
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
 		t.Fatalf("second = %+v", second)
 	}
 }

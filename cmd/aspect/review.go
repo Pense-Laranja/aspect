@@ -57,7 +57,10 @@ func runReview(args []string) error {
 	if err != nil {
 		return err
 	}
-	if res.Cached {
+	switch {
+	case res.CarriedFrom != "":
+		fmt.Printf("Only the base moved since run %s (same diff, agents and spec): its verdict is carried to this head as run %s.\n", res.CarriedFrom, res.RunID)
+	case res.Cached:
 		fmt.Printf("Diff unchanged since run %s: returning its results.\n", res.RunID)
 	}
 	if res.Plan != nil && res.Plan.SpecNote != "" {
