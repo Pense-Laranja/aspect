@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eideroliveira/aspect/internal/gate"
 	"github.com/eideroliveira/aspect/internal/llm"
 	"github.com/eideroliveira/aspect/internal/spec"
 )
@@ -450,6 +452,263 @@ func TestIncompletePreviousRunIsNotReused(t *testing.T) {
 	te.model.answers["red-team"] = clean
 	second := te.run(t, Options{})
 	if second.Cached || second.RunID == first.RunID || second.Outcome != OutcomePass {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+// mergeMain commits a file on main, as another branch's merge would, and
+// merges main into feature: the branch's own change and its diff stay what
+// they were.
+func mergeMain(t *testing.T, repo, path, content string) {
+	t.Helper()
+	gitIn(t, repo, "checkout", "-q", "main")
+	writeFile(t, filepath.Join(repo, path), content)
+	gitIn(t, repo, "add", path)
+	gitIn(t, repo, "commit", "-q", "-m", "elsewhere on main")
+	gitIn(t, repo, "checkout", "-q", "feature")
+	gitIn(t, repo, "merge", "-q", "--no-edit", "main")
+}
+
+func headOf(t *testing.T, repo string) string {
+	t.Helper()
+	return strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
+}
+
+// checkRun is what publish.sh runs on a run directory: `aspect gate check`
+// on its plan.json and reports.
+func checkRun(t *testing.T, repo, dir string) (*gate.Plan, *gate.Result) {
+	t.Helper()
+	var plan gate.Plan
+	b, err := os.ReadFile(filepath.Join(dir, "plan.json"))
+	if err != nil || json.Unmarshal(b, &plan) != nil {
+		t.Fatalf("plan.json: %v", err)
+	}
+	cfg, err := gate.LoadConfig(filepath.Join(repo, gate.DefaultConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := map[string]gate.Input{}
+	for _, a := range plan.Agents {
+		b, err := os.ReadFile(filepath.Join(dir, a.Agent+".json"))
+		inputs[a.Agent] = gate.Input{Data: b, Err: err}
+	}
+	return &plan, gate.Check(cfg, &plan, inputs, false)
+}
+
+func carriedFrom(t *testing.T, dir string) map[string]any {
+	t.Helper()
+	c, _ := readStatus(t, dir)["carried_from"].(map[string]any)
+	return c
+}
+
+func TestMergingTheBaseCarriesTheVerdict(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, ".claude/review/publish.sh"), "#!/bin/sh\necho \"published $*\"\n")
+	first := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean}).run(t, Options{})
+	firstBase, firstHead := readStatus(t, first.RunDir)["base"], headOf(t, repo)
+	mergeMain(t, repo, "c.go", "package a\n\nfunc C() {}\n")
+	head := headOf(t, repo)
+
+	broken := newTestEngine(t, repo, map[string]any{"security-reviewer": errors.New("must not be called"), "red-team": errors.New("must not be called")})
+	second := broken.run(t, Options{Publish: true})
+	if !second.Cached || second.CarriedFrom != first.RunID || second.RunID == first.RunID || second.Outcome != OutcomePass || broken.model.callCount() != 0 {
+		t.Fatalf("second = %+v, calls = %d", second, broken.model.callCount())
+	}
+	// The carried run names the head it is for, so publish.sh, which posts
+	// only a run of the pull request's head, accepts it, and gate check
+	// passes its reports.
+	plan, check := checkRun(t, repo, second.RunDir)
+	if plan.Head != head || plan.CarriedFrom == nil || plan.CarriedFrom.Run != first.RunID || plan.CarriedFrom.Head != firstHead {
+		t.Fatalf("plan = head %s, carried %+v", plan.Head, plan.CarriedFrom)
+	}
+	if check.Outcome != gate.Pass {
+		t.Errorf("gate check of the carried run = %+v", check)
+	}
+	if !strings.Contains(second.Rendered, "## Review gates: pass") || !strings.Contains(second.Rendered, "**Verdict carried** from run `"+first.RunID+"`") ||
+		!strings.Contains(second.Rendered, head[:12]) || strings.Contains(second.Rendered, gate.StatusInvalid) {
+		t.Errorf("rendered = %s", second.Rendered)
+	}
+	if !strings.HasPrefix(second.Published, "published "+second.RunDir) {
+		t.Errorf("published = %q", second.Published)
+	}
+	st, c := readStatus(t, second.RunDir), carriedFrom(t, second.RunDir)
+	if st["head"] != head || c["run"] != first.RunID || c["base"] != firstBase || c["head"] != firstHead || agentState(t, second.RunDir, "red-team") != stateCompleted {
+		t.Errorf("status = head %v, carried %v", st["head"], c)
+	}
+	// No model was paid for the carried run: the cost stays on the first.
+	if st["total_cost_usd"] != float64(0) || readStatus(t, first.RunDir)["total_cost_usd"] == float64(0) {
+		t.Errorf("cost = %v carried, %v first", st["total_cost_usd"], readStatus(t, first.RunDir)["total_cost_usd"])
+	}
+	// The run it carries is left as it was.
+	if readStatus(t, first.RunDir)["head"] != firstHead {
+		t.Error("the carried run was rewritten")
+	}
+	// Asked again on the same head, the carried run is reused as it is.
+	third := broken.run(t, Options{})
+	if !third.Cached || third.RunID != second.RunID || third.CarriedFrom != first.RunID {
+		t.Fatalf("third = %+v", third)
+	}
+}
+
+func TestMergingTheBaseTwiceCarriesTheRunThatReviewed(t *testing.T) {
+	repo := testRepo(t)
+	first := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean}).run(t, Options{})
+	broken := newTestEngine(t, repo, map[string]any{"security-reviewer": errors.New("must not be called"), "red-team": errors.New("must not be called")})
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := broken.run(t, Options{})
+	mergeMain(t, repo, "d.go", "package a\n")
+	// current_run.json names the carried run, so it is the one found: what
+	// it passes on is the run whose reports it holds.
+	third := broken.run(t, Options{})
+	if !third.Cached || third.RunID == second.RunID || third.CarriedFrom != first.RunID || broken.model.callCount() != 0 {
+		t.Fatalf("third = %+v, calls = %d", third, broken.model.callCount())
+	}
+	if plan, check := checkRun(t, repo, third.RunDir); check.Outcome != gate.Pass || plan.Head != headOf(t, repo) {
+		t.Errorf("gate check = %+v, head %s", check, plan.Head)
+	}
+	if strings.Contains(third.Rendered, gate.StatusInvalid) || !strings.Contains(third.Rendered, "## Review gates: pass") {
+		t.Errorf("rendered = %s", third.Rendered)
+	}
+}
+
+func TestACarriedBlockStaysBlocked(t *testing.T) {
+	repo := testRepo(t)
+	first := newTestEngine(t, repo, map[string]any{
+		"security-reviewer": `{"summary": "found one", "findings": [{"severity": "critical", "category": "security", "title": "SQL injection", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.95}]}`,
+		"red-team":          clean,
+	}).run(t, Options{})
+	if first.Outcome != OutcomeBlock {
+		t.Fatalf("first outcome = %s", first.Outcome)
+	}
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := newTestEngine(t, repo, nil).run(t, Options{})
+	if second.CarriedFrom != first.RunID || second.Outcome != OutcomeBlock || !strings.Contains(second.Rendered, "SQL injection") {
+		t.Fatalf("second = %+v", second)
+	}
+	if _, check := checkRun(t, repo, second.RunDir); check.Outcome != gate.Block {
+		t.Errorf("gate check = %+v", check)
+	}
+	findings, _ := readStatus(t, second.RunDir)["findings"].([]any)
+	if len(findings) != 1 || findings[0].(map[string]any)["run_id"] != second.RunID {
+		t.Errorf("status findings = %v", findings)
+	}
+}
+
+func TestMergingAChangedGatesConfigReviewsAgain(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	// The same agents on the same files, under a gates.yaml that now
+	// classifies findings differently.
+	mergeMain(t, repo, ".claude/review/gates.yaml", testGates+"thresholds:\n  block: [critical, high, medium]\n")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+func TestAFailedCarryReviewsAfresh(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	report := filepath.Join(first.RunDir, "red-team.json")
+	if err := os.Chmod(report, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(report, 0o644) })
+	if _, err := os.ReadFile(report); err == nil {
+		t.Skip("the report is still readable (running as root?)")
+	}
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.Outcome != OutcomePass || !strings.Contains(second.CarryError, "red-team.json") {
+		t.Fatalf("second = %+v", second)
+	}
+	// The carry's half-written run was removed: the two runs are all there is.
+	if dirs, _ := filepath.Glob(filepath.Join(repo, ".review", "local-*")); len(dirs) != 2 {
+		t.Errorf("runs = %v", dirs)
+	}
+}
+
+func TestALaterCommitThatChangesTheDiffIsNotCarried(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	// A descendant of the reviewed head, changing the same file: the files
+	// are the same, the diff is not.
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { panic(1) }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "more of the change")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+func TestMergingAChangedSpecReviewsAgain(t *testing.T) {
+	repo := testRepo(t)
+	spec := "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  constraints: [%s]\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: root, path: ., intent: a, goals: [G1]}\n"
+	mergeMain(t, repo, "_aspect/aspect.yaml", fmt.Sprintf(spec, "No float money."))
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	te.Config.SpecBudget = 30000
+	first := te.run(t, Options{})
+	if !strings.Contains(te.model.prompts["red-team"], "No float money.") {
+		t.Fatal("the spec is not in the prompt")
+	}
+	// main moves elsewhere: the reviewers would be shown the same spec.
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := te.run(t, Options{})
+	if second.CarriedFrom != first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+	// main adds a rule the change was never checked against.
+	mergeMain(t, repo, "_aspect/aspect.yaml", fmt.Sprintf(spec, "No float money., Every A() logs."))
+	third := te.run(t, Options{})
+	if third.Cached || third.CarriedFrom != "" {
+		t.Fatalf("third = %+v", third)
+	}
+	if !strings.Contains(te.model.prompts["red-team"], "Every A() logs.") {
+		t.Error("the new rule is not in the new review's prompt")
+	}
+}
+
+func TestMergingAChangedAgentReviewsAgain(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	// main changed what red-team is asked: the diff is the same, the
+	// question is not.
+	mergeMain(t, repo, ".claude/agents/red-team.md", "---\nname: red-team\n---\nred-team\n\nBe stricter.\n")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+func TestAnIdenticalDiffOnAnotherLineIsNotCarried(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	// The same change on a branch of its own: its head does not descend
+	// from the reviewed one.
+	gitIn(t, repo, "checkout", "-q", "-b", "other", "main")
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() {}\n")
+	gitIn(t, repo, "commit", "-q", "-am", "the same change, apart")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+func TestARunWithoutInputsHashIsNotCarried(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	if err := os.Remove(filepath.Join(first.RunDir, inputsHashFile)); err != nil {
+		t.Fatal(err)
+	}
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
 		t.Fatalf("second = %+v", second)
 	}
 }

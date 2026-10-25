@@ -33,6 +33,11 @@ func Render(c *Config, p *Plan, r *Result, opt RenderOptions) string {
 	if p.SpecNote != "" {
 		fmt.Fprintf(&b, "**Spec not fully shown:** %s\n\n", p.SpecNote)
 	}
+	if c := p.CarriedFrom; c != nil {
+		fmt.Fprintf(&b, "**Verdict carried** from run `%s`, which judged `%s`: this head's diff against its merge base is the same, byte for byte, "+
+			"and so are the agents' definitions and the spec they were shown; only the base moved. No agent ran on this head.\n\n",
+			inline(c.Run), short(c.Head))
+	}
 	if len(r.Agents) == 0 {
 		b.WriteString("No gate applies to this change.\n")
 		return b.String()

@@ -737,3 +737,29 @@ modules:
 		t.Errorf("pay = %+v, want its file and no topic", pay)
 	}
 }
+
+func TestACarriedPlanAcceptsItsRunsReports(t *testing.T) {
+	const base, head = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	const oldBase, oldHead = "3333333333333333333333333333333333333333", "4444444444444444444444444444444444444444"
+	carried := &Plan{Base: base, Head: head, CarriedFrom: &Carried{Run: "local-1", Base: oldBase, Head: oldHead}}
+	for _, c := range []struct {
+		name       string
+		p          *Plan
+		base, head string
+		want       bool
+	}{
+		{"its own range", carried, base, head, true},
+		{"the carried run's range", carried, oldBase, oldHead, true},
+		{"the carried run's range, abbreviated", carried, oldBase[:12], oldHead[:12], true},
+		{"half of each", carried, oldBase, head, false},
+		{"another range", carried, oldBase, "5555555555555555555555555555555555555555", false},
+		{"the old range, not carried", &Plan{Base: base, Head: head}, oldBase, oldHead, false},
+		{"a carried plan that names no range", &Plan{Base: base, Head: head, CarriedFrom: &Carried{Run: "local-1"}}, oldBase, oldHead, false},
+		{"a report naming only the carried head", carried, "", oldHead, false},
+		{"a report naming only the carried base", carried, oldBase, "", false},
+	} {
+		if got := c.p.reviews(c.base, c.head); got != c.want {
+			t.Errorf("%s: reviews(%s, %s) = %v, want %v", c.name, c.base, c.head, got, c.want)
+		}
+	}
+}

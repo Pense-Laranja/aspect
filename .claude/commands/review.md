@@ -12,7 +12,7 @@ Follow these steps:
 2. **Run Review Gates:** Run via Bash:
    `aspect review -repo . -base <base-ref>`
    (or `.claude/review/run.sh --publish <base-ref>` where the repository has it, which also publishes the result).
-   It needs `GEMINI_API_KEY` (or `GOOGLE_API_KEY`). It exits 0 on pass or warn, 1 when the gates block, and 2 when there is no verdict, which is not a pass. The run is `.review/<run-id>/`; an unchanged diff reuses its finished run (`-force` reviews again).
+   It needs `GEMINI_API_KEY` (or `GOOGLE_API_KEY`). It exits 0 on pass or warn, 1 when the gates block, and 2 when there is no verdict, which is not a pass. The run is `.review/<run-id>/`; an unchanged diff reuses its finished run, and a head that only merged its base in cleanly (same diff, same agents and spec) carries the verdict of the head before it as a run of its own (`-force` reviews again).
 
 3. **PR Merge Gating & Decision:**
    - With `-publish`, the repository's `.claude/review/publish.sh` posts the result to the open pull request.
