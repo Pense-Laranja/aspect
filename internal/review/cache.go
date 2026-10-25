@@ -19,11 +19,11 @@ import (
 // reusableOutcomes are the outcomes of a run that finished with a verdict.
 var reusableOutcomes = []string{OutcomePass, OutcomeWarn, OutcomeBlock, OutcomeOverridden}
 
-// findCachedRun is the latest finished run of the same diff whose every
-// planned agent reported, or "". The run current_run.json names is tried
-// first, then the local-* runs newest first.
+// findCachedRun is the latest finished run whose every planned agent
+// reported and whose verdict holds for this head, or "". The run
+// current_run.json names is tried first, then the local-* runs newest first.
 //
-// A run of the same head is reused as it is. Failing that, carried is true
+// A run of the same head and diff is reused as it is. Failing that, carried is true
 // and dir is a run whose verdict may be carried to plan's head: it judged an
 // earlier head of the branch (an ancestor of this one), its diff against its
 // merge base hashes the same, context lines included, and its reviewers were
@@ -249,14 +249,7 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	_ = os.WriteFile(filepath.Join(dir, "diff.hash"), []byte(diffHash), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, inputsHashFile), []byte(inputsHash), 0o644)
 
-	status := NewObject()
-	if b, err := os.ReadFile(filepath.Join(from, "status.json")); err == nil {
-		if v, err := parseValue(b); err == nil {
-			if o, ok := v.(*Object); ok {
-				status = o
-			}
-		}
-	}
+	status := readStatusObject(filepath.Join(from, "status.json"))
 	now := e.now().UTC().Format(time.RFC3339)
 	status.Set("run_id", runID)
 	status.Set("base", plan.Base)
@@ -275,6 +268,20 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	for _, f := range records(status, "findings") {
 		f.Set("run_id", runID)
 	}
+	// No model was paid for this run: what the reviews cost stays on the run
+	// that made them, so a sum over runs counts it once.
+	status.Set("total_cost_usd", 0)
+	status.Set("total_tokens", 0)
+	status.Set("usage", map[string]any{"total_cost_usd": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+	if agents, ok := status.Get("agents").(*Object); ok {
+		for _, name := range agents.Keys() {
+			if a, ok := agents.Get(name).(*Object); ok {
+				a.Set("cost_usd", 0)
+				a.Set("tokens", map[string]any{"prompt": 0, "completion": 0, "total": 0})
+				a.Set("duration_seconds", 0)
+			}
+		}
+	}
 	if err := writeJSON(filepath.Join(dir, "status.json"), status); err != nil {
 		return "", err
 	}
@@ -286,14 +293,7 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 func (e *Engine) reuse(ctx context.Context, repo, dir string, cfg *gate.Config, plan *gate.Plan, pr PullRequest, publish bool) (*Result, error) {
 	runID := filepath.Base(dir)
 	statusPath := filepath.Join(dir, "status.json")
-	status := NewObject()
-	if b, err := os.ReadFile(statusPath); err == nil {
-		if v, err := parseValue(b); err == nil {
-			if o, ok := v.(*Object); ok {
-				status = o
-			}
-		}
-	}
+	status := readStatusObject(statusPath)
 	// Published again when the pull request is new to the run or the run was
 	// never published. With no pull request found, publish.sh is still run
 	// (it finds the branch's own) but nothing is recorded, so a later run
@@ -344,4 +344,17 @@ func (e *Engine) reuse(ctx context.Context, repo, dir string, cfg *gate.Config, 
 		PR: firstNonEmpty(pr.Number, asText(status.Get("pr"))), PRURL: firstNonEmpty(pr.URL, asText(status.Get("pr_url"))),
 		Plan: runPlan, Outcome: outcome, Rendered: rendered, Published: published,
 	}, nil
+}
+
+// readStatusObject is a run's status.json as an Object, keys in their order;
+// an empty one when it cannot be read.
+func readStatusObject(path string) *Object {
+	if b, err := os.ReadFile(path); err == nil {
+		if v, err := parseValue(b); err == nil {
+			if o, ok := v.(*Object); ok {
+				return o
+			}
+		}
+	}
+	return NewObject()
 }

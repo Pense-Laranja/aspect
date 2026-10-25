@@ -63,6 +63,9 @@ func runReview(args []string) error {
 	case res.Cached:
 		fmt.Printf("Diff unchanged since run %s: returning its results.\n", res.RunID)
 	}
+	if res.CarryError != "" {
+		fmt.Fprintln(os.Stderr, "aspect: warning: the earlier verdict could not be carried, so the change was reviewed again:", res.CarryError)
+	}
 	if res.Plan != nil && res.Plan.SpecNote != "" {
 		fmt.Fprintln(os.Stderr, "aspect: warning:", res.Plan.SpecNote)
 	}

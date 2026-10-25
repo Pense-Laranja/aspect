@@ -101,10 +101,14 @@ type Result struct {
 	RunDir string
 	Cached bool // an earlier run of the same diff was reused
 	// CarriedFrom is the run whose verdict was carried to this head, when
-	// the reused run judged an earlier one (findCachedRun).
+	// the reused run judged an earlier one (findCachedRun); Plan.CarriedFrom
+	// has its range.
 	CarriedFrom string
-	PR, PRURL   string
-	Plan        *gate.Plan
+	// CarryError says why a verdict that could have been carried was not,
+	// and the change was reviewed afresh instead.
+	CarryError string
+	PR, PRURL  string
+	Plan       *gate.Plan
 	// Outcome is PASS, WARN, OVERRIDDEN, BLOCK or ERROR.
 	Outcome   string
 	Rendered  string // the Markdown result
@@ -151,12 +155,16 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	specOf := e.specContexts(ctx, repo, plan) // before plan.json: it records plan.SpecNote
 	inputsHash := e.inputsHash(repo, plan, specOf)
 
+	carryErr := ""
 	if !opt.Force {
 		if dir, carried := e.findCachedRun(ctx, repo, plan, diff, diffHash, inputsHash); dir != "" {
 			if carried {
 				// A carry is a saving, never a requirement: when it cannot be
-				// written, the change is reviewed afresh.
-				dir, _ = e.carry(repo, dir, plan, diffHash, inputsHash)
+				// written, the change is reviewed afresh, and the result says why.
+				var err error
+				if dir, err = e.carry(repo, dir, plan, diffHash, inputsHash); err != nil {
+					carryErr = describe(err)
+				}
 			}
 			if dir != "" {
 				return e.reuse(ctx, repo, dir, cfg, plan, pr, opt.Publish)
@@ -185,7 +193,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 			s.mode, s.files = a.Mode, a.Files
 		}
 	})
-	res := &Result{RunID: runID, RunDir: dir, PR: pr.Number, PRURL: pr.URL, Plan: plan}
+	res := &Result{RunID: runID, RunDir: dir, PR: pr.Number, PRURL: pr.URL, Plan: plan, CarryError: carryErr}
 	if len(plan.Agents) == 0 {
 		res.Outcome, res.Rendered = st.finish(OutcomePass, ""), noAgents
 		return res, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -534,6 +535,10 @@ func TestMergingTheBaseCarriesTheVerdict(t *testing.T) {
 	if st["head"] != head || c["run"] != first.RunID || c["base"] != firstBase || c["head"] != firstHead || agentState(t, second.RunDir, "red-team") != stateCompleted {
 		t.Errorf("status = head %v, carried %v", st["head"], c)
 	}
+	// No model was paid for the carried run: the cost stays on the first.
+	if st["total_cost_usd"] != float64(0) || readStatus(t, first.RunDir)["total_cost_usd"] == float64(0) {
+		t.Errorf("cost = %v carried, %v first", st["total_cost_usd"], readStatus(t, first.RunDir)["total_cost_usd"])
+	}
 	// The run it carries is left as it was.
 	if readStatus(t, first.RunDir)["head"] != firstHead {
 		t.Error("the carried run was rewritten")
@@ -616,12 +621,53 @@ func TestAFailedCarryReviewsAfresh(t *testing.T) {
 	}
 	mergeMain(t, repo, "c.go", "package a\n")
 	second := te.run(t, Options{})
-	if second.Cached || second.CarriedFrom != "" || second.Outcome != OutcomePass {
+	if second.Cached || second.CarriedFrom != "" || second.Outcome != OutcomePass || !strings.Contains(second.CarryError, "red-team.json") {
 		t.Fatalf("second = %+v", second)
 	}
 	// The carry's half-written run was removed: the two runs are all there is.
 	if dirs, _ := filepath.Glob(filepath.Join(repo, ".review", "local-*")); len(dirs) != 2 {
 		t.Errorf("runs = %v", dirs)
+	}
+}
+
+func TestALaterCommitThatChangesTheDiffIsNotCarried(t *testing.T) {
+	repo := testRepo(t)
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	first := te.run(t, Options{})
+	// A descendant of the reviewed head, changing the same file: the files
+	// are the same, the diff is not.
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { panic(1) }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "more of the change")
+	second := te.run(t, Options{})
+	if second.Cached || second.CarriedFrom != "" || second.RunID == first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+}
+
+func TestMergingAChangedSpecReviewsAgain(t *testing.T) {
+	repo := testRepo(t)
+	spec := "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  constraints: [%s]\n  goals: [{id: G1, statement: x}]\nmodules:\n  - {name: root, path: ., intent: a, goals: [G1]}\n"
+	mergeMain(t, repo, "_aspect/aspect.yaml", fmt.Sprintf(spec, "No float money."))
+	te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+	te.Config.SpecBudget = 30000
+	first := te.run(t, Options{})
+	if !strings.Contains(te.model.prompts["red-team"], "No float money.") {
+		t.Fatal("the spec is not in the prompt")
+	}
+	// main moves elsewhere: the reviewers would be shown the same spec.
+	mergeMain(t, repo, "c.go", "package a\n")
+	second := te.run(t, Options{})
+	if second.CarriedFrom != first.RunID {
+		t.Fatalf("second = %+v", second)
+	}
+	// main adds a rule the change was never checked against.
+	mergeMain(t, repo, "_aspect/aspect.yaml", fmt.Sprintf(spec, "No float money., Every A() logs."))
+	third := te.run(t, Options{})
+	if third.Cached || third.CarriedFrom != "" {
+		t.Fatalf("third = %+v", third)
+	}
+	if !strings.Contains(te.model.prompts["red-team"], "Every A() logs.") {
+		t.Error("the new rule is not in the new review's prompt")
 	}
 }
 

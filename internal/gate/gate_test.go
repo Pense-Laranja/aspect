@@ -755,6 +755,8 @@ func TestACarriedPlanAcceptsItsRunsReports(t *testing.T) {
 		{"another range", carried, oldBase, "5555555555555555555555555555555555555555", false},
 		{"the old range, not carried", &Plan{Base: base, Head: head}, oldBase, oldHead, false},
 		{"a carried plan that names no range", &Plan{Base: base, Head: head, CarriedFrom: &Carried{Run: "local-1"}}, oldBase, oldHead, false},
+		{"a report naming only the carried head", carried, "", oldHead, false},
+		{"a report naming only the carried base", carried, oldBase, "", false},
 	} {
 		if got := c.p.reviews(c.base, c.head); got != c.want {
 			t.Errorf("%s: reviews(%s, %s) = %v, want %v", c.name, c.base, c.head, got, c.want)
