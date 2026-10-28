@@ -59,3 +59,35 @@ func TestAgentExampleReports(t *testing.T) {
 		t.Error("no agent file has an example report; the extraction is broken")
 	}
 }
+
+func TestAgentPromptsAreSelfContainedAndScoped(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "..", ".claude", "agents", "*.md"))
+	if err != nil {
+		t.Fatalf("glob agent files: %v", err)
+	}
+	if len(files) < 19 {
+		t.Fatalf("expected at least 19 agent files, got %d", len(files))
+	}
+	for _, file := range files {
+		name := strings.TrimSuffix(filepath.Base(file), ".md")
+		t.Run(name, func(t *testing.T) {
+			b, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(b)
+			if strings.Contains(text, "Read .claude/review/PROTOCOL.md") || strings.Contains(text, "Read `.claude/review/PROTOCOL.md`") {
+				t.Errorf("%s still instructs reading .claude/review/PROTOCOL.md", name)
+			}
+			if strings.Contains(text, "go test ./...") {
+				t.Errorf("%s contains unscoped 'go test ./...'", name)
+			}
+			if !strings.Contains(text, "files:") {
+				t.Errorf("%s does not document 'files:' input for scoped diff execution", name)
+			}
+			if !strings.Contains(text, "aspect-review/v1") {
+				t.Errorf("%s does not document 'aspect-review/v1' schema", name)
+			}
+		})
+	}
+}

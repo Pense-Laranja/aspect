@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/eideroliveira/aspect/internal/llm"
 )
@@ -81,11 +82,24 @@ func planParts(req request, promptBudget int) (*splitDiff, []diffPart) {
 	return s, chunkDiff(s, diffBudget(req, s, promptBudget))
 }
 
+func thinkingBudgetForPart(p diffPart) int {
+	tokens := estimateTokens(p.text)
+	switch {
+	case tokens <= 1000:
+		return 1024
+	case tokens <= 4000:
+		return 2048
+	default:
+		return 4096
+	}
+}
+
 // usage is what one review cost.
 type usage struct {
 	Engine           string
 	CostUSD          float64
 	PromptTokens     int64
+	CachedTokens     int64
 	CompletionTokens int64
 	TotalTokens      int64
 }
@@ -99,6 +113,7 @@ func (u *usage) add(o usage) {
 	}
 	u.CostUSD += o.CostUSD
 	u.PromptTokens += o.PromptTokens
+	u.CachedTokens += o.CachedTokens
 	u.CompletionTokens += o.CompletionTokens
 	u.TotalTokens += o.TotalTokens
 }
@@ -175,27 +190,82 @@ func (rv *reviewer) review(ctx context.Context, req request, h hooks) (*Object, 
 	if h.planned != nil {
 		h.planned(len(parts))
 	}
-	var results []*Object
-	var total usage
-	for _, p := range parts {
+	if len(parts) == 1 {
+		p := parts[0]
 		if h.waiting != nil {
 			h.waiting()
 		}
-		res, u, err := rv.ask(ctx, userPrompt(req, s, p), h.started)
+		budget := thinkingBudgetForPart(p)
+		res, u, err := rv.ask(ctx, userPrompt(req, s, p), &budget, h.started)
 		if err != nil {
-			return nil, total, err
+			return nil, u, err
 		}
-		results = append(results, res)
-		total.add(u)
 		if h.partDone != nil {
-			h.partDone(p.index, p.total)
+			h.partDone(1, 1)
 		}
+		return res, u, nil
+	}
+
+	pctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make([]*Object, len(parts))
+	usages := make([]usage, len(parts))
+	var (
+		wg       sync.WaitGroup
+		once     sync.Once
+		firstErr error
+		hookMu   sync.Mutex
+		done     int
+	)
+	started := func() {
+		if h.started != nil {
+			hookMu.Lock()
+			h.started()
+			hookMu.Unlock()
+		}
+	}
+	if h.waiting != nil {
+		for range parts {
+			h.waiting()
+		}
+	}
+	for i, p := range parts {
+		wg.Add(1)
+		go func(i int, p diffPart) {
+			defer wg.Done()
+			budget := thinkingBudgetForPart(p)
+			res, u, err := rv.ask(pctx, userPrompt(req, s, p), &budget, started)
+			if err != nil {
+				once.Do(func() {
+					firstErr = err
+					cancel()
+				})
+				return
+			}
+			results[i] = res
+			usages[i] = u
+			if h.partDone != nil {
+				hookMu.Lock()
+				done++
+				h.partDone(done, p.total)
+				hookMu.Unlock()
+			}
+		}(i, p)
+	}
+	wg.Wait()
+	var total usage
+	for _, u := range usages {
+		total.add(u)
+	}
+	if firstErr != nil {
+		return nil, total, firstErr
 	}
 	return mergeParts(results), total, nil
 }
 
 // ask sends one prompt once a slot is free.
-func (rv *reviewer) ask(ctx context.Context, prompt string, started func()) (*Object, usage, error) {
+func (rv *reviewer) ask(ctx context.Context, prompt string, thinkingBudget *int, started func()) (*Object, usage, error) {
 	if rv.slots != nil {
 		select {
 		case rv.slots <- struct{}{}:
@@ -207,7 +277,12 @@ func (rv *reviewer) ask(ctx context.Context, prompt string, started func()) (*Ob
 	if started != nil {
 		started()
 	}
-	resp, err := rv.client.Complete(ctx, llm.Request{System: sharedSystemPrompt, Prompt: prompt, JSON: true})
+	resp, err := rv.client.Complete(ctx, llm.Request{
+		System:         sharedSystemPrompt,
+		Prompt:         prompt,
+		JSON:           true,
+		ThinkingBudget: thinkingBudget,
+	})
 	if err != nil {
 		return nil, usage{}, err
 	}
@@ -222,15 +297,17 @@ func (rv *reviewer) ask(ctx context.Context, prompt string, started func()) (*Ob
 	u := usage{
 		Engine:           rv.engine,
 		PromptTokens:     resp.InputTokens,
+		CachedTokens:     resp.CacheReadTokens,
 		CompletionTokens: resp.OutputTokens,
 		TotalTokens:      resp.InputTokens + resp.OutputTokens + resp.ThoughtTokens,
-		CostUSD:          geminiCost(model, resp.InputTokens, resp.OutputTokens),
+		CostUSD:          geminiCost(model, resp.InputTokens, resp.CacheReadTokens, resp.OutputTokens),
 	}
 	return res, u, nil
 }
 
-// geminiCost is the estimated cost in USD of a Gemini call.
-func geminiCost(model string, prompt, completion int64) float64 {
+// geminiCost is the estimated cost in USD of a Gemini call. Cached prompt
+// tokens are billed at 25% of the input rate (75% discount).
+func geminiCost(model string, prompt, cached, completion int64) float64 {
 	var in, out float64
 	switch {
 	case strings.Contains(strings.ToLower(model), "pro") && prompt > 128_000:
@@ -242,5 +319,8 @@ func geminiCost(model string, prompt, completion int64) float64 {
 	default:
 		in, out = 0.075, 0.30
 	}
-	return roundTo((float64(prompt)*in+float64(completion)*out)/1_000_000, 6)
+	cached = max(0, min(cached, prompt))
+	uncached := prompt - cached
+	inCost := float64(uncached)*in + float64(cached)*(in*0.25)
+	return roundTo((inCost+float64(completion)*out)/1_000_000, 6)
 }

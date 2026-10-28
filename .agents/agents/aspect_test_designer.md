@@ -10,7 +10,6 @@ tools:
   - replace_file_content
   - view_file
   - send_message
-  - call_mcp_tool
 ---
 
 # Aspect Test Designer

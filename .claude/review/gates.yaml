@@ -19,7 +19,7 @@ gates:
     paths: ["**"]                  # every change is checked for lockstep
     mode: gate
   - agent: adversarial-reviewer
-    paths: ["**/*.go", "**/*.swift", "go.mod", "go.sum"]
+    paths: ["**/*.go", "!**/*_test.go", "**/*.swift"]
     mode: gate
   # The red team runs only where untrusted input crosses a boundary: for
   # Aspect, the workspace (writes model output to disk and runs tools), the
@@ -33,51 +33,51 @@ gates:
   - agent: security-red-team
     paths: ["cmd/**", "internal/workspace/**", "internal/llm/**", "internal/agents/**",
             "internal/importer/**", "internal/analyze/**", "go.mod", "go.sum",
-            "**/Dockerfile", ".github/**", ".claude/**"]
+            "**/Dockerfile", ".github/**", ".claude/**", "!**/*_test.go"]
     mode: gate
   - agent: security-reviewer
-    paths: ["cmd/**", "internal/**", "go.mod", "go.sum", "**/*.go", "**/*.swift", "**/Dockerfile", ".github/**"]
+    paths: ["cmd/**", "internal/**", "go.mod", "go.sum", "**/*.go", "**/*.swift", "**/Dockerfile", ".github/**", "!**/*_test.go"]
     mode: gate
   - agent: red-team
     paths: ["cmd/**", "internal/workspace/**", "internal/llm/**", "internal/agents/**",
             "internal/importer/**", "internal/analyze/**", "go.mod", "go.sum",
-            "**/Dockerfile", ".github/**", ".claude/**"]
+            "**/Dockerfile", ".github/**", ".claude/**", "!**/*_test.go"]
     mode: gate
   - agent: quality-reviewer
-    paths: ["**/*.go", "**/*.swift", "go.mod", "go.sum"]
+    paths: ["**/*.go", "!**/*_test.go", "**/*.swift", "go.mod", "go.sum"]
     mode: gate
   - agent: consistency-reviewer
     paths: ["**"]
     mode: advisory
   - agent: readability-reviewer
-    paths: ["**/*.go", "**/*.swift"]
+    paths: ["**/*.go", "!**/*_test.go", "**/*.swift"]
     mode: advisory
   - agent: design-reviewer
-    paths: ["**/*.go", "**/*.swift", "_aspect/**", "internal/**", "cmd/**"]
+    paths: ["**/*.go", "!**/*_test.go", "**/*.swift", "_aspect/**", "internal/**", "cmd/**"]
     mode: advisory
   - agent: architect
-    paths: ["_aspect/**", "aspect.yaml", "**/aspect.yaml", "go.mod", "internal/**", "cmd/**"]
+    paths: ["_aspect/**", "aspect.yaml", "**/aspect.yaml", "go.mod", "internal/**", "cmd/**", "!**/*_test.go"]
     mode: advisory
     when:
       min_changed_lines: 200
       or_touches: ["_aspect/**", "aspect.yaml", "**/aspect.yaml", "go.mod"]
   - agent: database-reviewer
-    paths: ["**/*.sql", "migrations/**", "models/**", "internal/db/**", "**/db*.go"]
+    paths: ["**/*.sql", "migrations/**", "models/**", "internal/db/**", "**/db*.go", "!**/*_test.go"]
     mode: gate
   - agent: test-adequacy-reviewer
     paths: ["**/*.go", "**/*.swift"]
     mode: gate
   - agent: performance-reviewer
-    paths: ["**/*.go", "internal/**", "cmd/**"]
+    paths: ["**/*.go", "!**/*_test.go", "internal/**", "cmd/**"]
     mode: advisory
   - agent: observability-reviewer
-    paths: ["**/*.go", "internal/**", "cmd/**"]
+    paths: ["**/*.go", "!**/*_test.go", "internal/**", "cmd/**"]
     mode: advisory
   - agent: i18n-reviewer
-    paths: ["**/*.go", "modules/i18n/**", "translatejob/**", "**/*.tsv"]
+    paths: ["**/*.go", "!**/*_test.go", "modules/i18n/**", "translatejob/**", "**/*.tsv"]
     mode: gate
   - agent: api-contract-reviewer
-    paths: ["**/*.go", "cmd/**", "router/**", "checkout/**", "webhook/**"]
+    paths: ["**/*.go", "!**/*_test.go", "cmd/**", "router/**", "checkout/**", "webhook/**"]
     mode: advisory
 
 thresholds:

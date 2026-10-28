@@ -304,13 +304,29 @@ func (p *Plan) Agent(name string) (Planned, bool) {
 	return p.Agents[i], true
 }
 
-func matchAny(patterns []string, name string) bool {
+func hasPositivePattern(patterns []string) bool {
 	for _, p := range patterns {
-		if Match(p, name) {
+		if p != "" && !strings.HasPrefix(p, "!") {
 			return true
 		}
 	}
 	return false
+}
+
+func matchAny(patterns []string, name string) bool {
+	matched := false
+	for _, p := range patterns {
+		if neg, ok := strings.CutPrefix(p, "!"); ok {
+			if Match(neg, name) {
+				return false
+			}
+			continue
+		}
+		if Match(p, name) {
+			matched = true
+		}
+	}
+	return matched
 }
 
 // Match reports whether a slash-separated path matches a glob pattern
@@ -319,4 +335,12 @@ func Match(pattern, name string) bool { return spec.MatchPath(pattern, name) }
 
 // checkPattern rejects patterns path.Match cannot parse, so a typo in
 // gates.yaml fails loudly instead of silently never matching.
-func checkPattern(p string) error { return spec.CheckPathPattern(p) }
+func checkPattern(p string) error {
+	if neg, ok := strings.CutPrefix(p, "!"); ok {
+		if neg == "" {
+			return fmt.Errorf("empty negated pattern %q", p)
+		}
+		return spec.CheckPathPattern(neg)
+	}
+	return spec.CheckPathPattern(p)
+}

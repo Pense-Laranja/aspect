@@ -167,8 +167,12 @@ jobs:
           dir=".review/$RUN_ID"
           out="$dir/$AGENT.json"
           transcript="$dir/$AGENT.transcript.json"
-          block=$(jq -r --arg mode "$MODE" --arg out "$out" --arg files "$FILES" \
-            '"base: \(.base)\nhead: \(.head)\nspec: \(.spec)\nmode: \($mode)\nout:  \($out)\nfiles: \($files)"' "$dir/plan.json")
+          block=$(jq -r --arg agent "$AGENT" --arg mode "$MODE" --arg out "$out" --arg files "$FILES" '
+            ([.agents[] | select(.agent == $agent) | .modules // []][0] // []) as $mods |
+            [.modules // [] | .[] | select(.name as $n | $mods | index($n) != null) | {name, intent, invariants, constraints, brief, topics}] as $mctx |
+            "base: \(.base)\nhead: \(.head)\nspec: \(.spec)\nmode: \($mode)\nout:  \($out)\nfiles: \($files)" +
+            (if ($mctx | length) > 0 then "\nmodules: \($mctx | tojson)" else "" end)
+          ' "$dir/plan.json")
           # A failed or empty run leaves no report; the final job then blocks.
           # When the agent exits non-zero, its output is the only clue to why
           # (an expired key, a CLI change, a refused flag), so show its start.

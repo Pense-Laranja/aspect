@@ -124,6 +124,12 @@ func (c *Config) validate() error {
 				return fmt.Errorf("gates[%d] (%s): %w", i, g.Agent, err)
 			}
 		}
+		if !hasPositivePattern(g.Paths) {
+			return fmt.Errorf("gates[%d] (%s): paths must contain at least one positive pattern", i, g.Agent)
+		}
+		if g.When != nil && len(g.When.OrTouches) > 0 && !hasPositivePattern(g.When.OrTouches) {
+			return fmt.Errorf("gates[%d] (%s): when.or_touches must contain at least one positive pattern", i, g.Agent)
+		}
 	}
 	for _, s := range append(append(slices.Clone(c.Thresholds.Block), c.Thresholds.Warn...), c.PublicRedaction...) {
 		if !slices.Contains(Severities, s) {
