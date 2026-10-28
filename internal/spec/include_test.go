@@ -172,3 +172,40 @@ func TestIncludesStayInsideTheRepository(t *testing.T) {
 		}
 	}
 }
+
+func TestNestedIncludeRebasesBriefOnce(t *testing.T) {
+	repo := t.TempDir()
+	for _, d := range []string{".git", "_aspect/modules/pkg", "pkg/rules"} {
+		if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(rel, content string) {
+		if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("pkg/ASPECT.md", "Module brief.\n")
+	write("pkg/rules/topic.md", "Topic brief.\n")
+	write("_aspect/aspect.yaml", "aspect: 1\nsystem:\n  name: g\n  intent: x\n  module_path: example.com/g\n  goals: [{id: G1, statement: x}]\nmodules:\n  - dir: modules\n")
+	write("_aspect/modules/pkg.yaml", "name: pkg\npath: pkg\nintent: x\ngoals: [G1]\nscenarios: [{id: S1, when: a, then: b}]\ntopics:\n  - dir: pkg\nbrief: ../../pkg/ASPECT.md\n")
+	write("_aspect/modules/pkg/topic.yaml", "name: topic\nintent: t\nfiles: [pkg/*.go]\nbrief: ../../../pkg/rules/topic.md\n")
+
+	s, err := Load(filepath.Join(repo, "_aspect/aspect.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := s.Module("pkg")
+	if m == nil || len(m.Topics) != 1 {
+		t.Fatalf("module/topics = %+v", m)
+	}
+	if m.Brief.Path != "../pkg/ASPECT.md" || m.Brief.Text != "Module brief.\n" {
+		t.Fatalf("module brief = %+v", m.Brief)
+	}
+	if m.Topics[0].Brief.Path != "../pkg/rules/topic.md" || m.Topics[0].Brief.Text != "Topic brief.\n" {
+		t.Fatalf("nested topic brief must be rebased once relative to _aspect/: %+v", m.Topics[0].Brief)
+	}
+	if got := filepath.ToSlash(s.Sources.TopicFile("pkg", "topic")); !strings.HasSuffix(got, "_aspect/modules/pkg/topic.yaml") {
+		t.Fatalf("TopicFile = %q", got)
+	}
+}

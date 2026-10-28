@@ -186,18 +186,23 @@ func (e *expander) loadFragment(path, dir string) (*yaml.Node, error) {
 	if err := e.expandIncludes(&doc, fragDir); err != nil {
 		return nil, err
 	}
-	e.record(&doc, path)
 	rel, err := filepath.Rel(e.rootDir, fragDir)
 	if err != nil {
 		rel = fragDir
 	}
-	rebasePaths(doc.Content[0], rel)
+	e.rebasePaths(doc.Content[0], rel)
+	e.record(&doc, path)
 	return doc.Content[0], nil
 }
 
 // rebasePaths prefixes path-valued keys in a fragment with the fragment's
-// directory relative to the root spec.
-func rebasePaths(n *yaml.Node, rel string) {
+// directory relative to the root spec. Nodes already recorded by a nested
+// include were rebased against rootDir when that inner fragment loaded, so
+// the walk stops at their roots.
+func (e *expander) rebasePaths(n *yaml.Node, rel string) {
+	if _, done := e.files[n]; done {
+		return
+	}
 	switch n.Kind {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
@@ -206,11 +211,11 @@ func rebasePaths(n *yaml.Node, rel string) {
 				v.Value = filepath.ToSlash(filepath.Join(rel, v.Value))
 				continue
 			}
-			rebasePaths(v, rel)
+			e.rebasePaths(v, rel)
 		}
 	case yaml.SequenceNode, yaml.DocumentNode:
 		for _, c := range n.Content {
-			rebasePaths(c, rel)
+			e.rebasePaths(c, rel)
 		}
 	}
 }
