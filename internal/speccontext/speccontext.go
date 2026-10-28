@@ -57,6 +57,9 @@ type Options struct {
 	// root: of a module's topics only those they touch are shown
 	// (spec.Spec.TopicsTouching), the others named.
 	Files []string
+	// Topics are explicit topic names (`<topic>` or `<module>:<topic>`) to
+	// show alongside any topics touched by Files.
+	Topics []string
 	// AllTopics shows every topic whatever Files holds, for a reader about
 	// a whole module.
 	AllTopics bool
@@ -112,6 +115,29 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 			for j := range m.Topics {
 				shown[i] = append(shown[i], &m.Topics[j])
 			}
+		} else if len(opt.Topics) > 0 {
+			touched, _ := s.TopicsTouching(m, opt.Files)
+			touchedSet := make(map[string]bool, len(touched))
+			for _, t := range touched {
+				touchedSet[t.Name] = true
+			}
+			for _, want := range opt.Topics {
+				if wantMod, wantTopic, ok := strings.Cut(want, ":"); ok {
+					if wantMod == m.Name {
+						touchedSet[wantTopic] = true
+					}
+				} else {
+					touchedSet[want] = true
+				}
+			}
+			for j := range m.Topics {
+				t := &m.Topics[j]
+				if touchedSet[t.Name] {
+					shown[i] = append(shown[i], t)
+				} else {
+					hidden = append(hidden, t)
+				}
+			}
 		} else {
 			shown[i], hidden = s.TopicsTouching(m, opt.Files)
 		}
@@ -123,6 +149,23 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 				parts = append(parts, part{module: i, kind: kindTopic, label: "the rules of " + m.Name + " topic " + t.Name, text: text, truncatable: true})
 			}
 		}
+	}
+	appendTopicBriefs := func() {
+		if opt.OmitBriefs {
+			return
+		}
+		for i, m := range mods {
+			for _, t := range shown[i] {
+				if text := strings.TrimSpace(t.Brief.Text); text != "" {
+					where := briefPath(s, t.Brief.Path)
+					parts = append(parts, part{module: i, kind: kindTopicBrief, label: "brief of " + m.Name + " topic " + t.Name + " (" + where + ")",
+						text: fmt.Sprintf("### Brief of topic %s (%s)\n\nThe owner's longer description of what the topic binds; binding where it is more specific than the rules above.\n\n%s\n", t.Name, where, text)})
+				}
+			}
+		}
+	}
+	if len(opt.Topics) > 0 {
+		appendTopicBriefs()
 	}
 	for i, m := range mods {
 		if t := operations(m); t != "" {
@@ -140,14 +183,8 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 					text: fmt.Sprintf("### Brief (%s)\n\nThe owner's longer description of the module; binding where it is more specific than the rules above.\n\n%s\n", where, text)})
 			}
 		}
-		for i, m := range mods {
-			for _, t := range shown[i] {
-				if text := strings.TrimSpace(t.Brief.Text); text != "" {
-					where := briefPath(s, t.Brief.Path)
-					parts = append(parts, part{module: i, kind: kindTopicBrief, label: "brief of " + m.Name + " topic " + t.Name + " (" + where + ")",
-						text: fmt.Sprintf("### Brief of topic %s (%s)\n\nThe owner's longer description of what the topic binds; binding where it is more specific than the rules above.\n\n%s\n", t.Name, where, text)})
-				}
-			}
+		if len(opt.Topics) == 0 {
+			appendTopicBriefs()
 		}
 	}
 	if len(parts) == 0 {

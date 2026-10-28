@@ -79,6 +79,8 @@ func TestModulesForTopics(t *testing.T) {
 		// The second file's module is already in: still no unowned report.
 		{[]string{in("admin/order_page.go"), in("admin/order_list.go")}, []string{"orders"}, []string{"admin/order_page.go", "admin/order_list.go"}, false, false},
 		{[]string{"orders", in("admin/order_page.go")}, []string{"orders"}, []string{"admin/order_page.go"}, true, false},
+		{[]string{"orders:pages"}, []string{"orders"}, nil, false, false},
+		{[]string{"pages"}, []string{"orders"}, nil, false, false},
 		{[]string{in("rules/pages.md")}, []string{"orders"}, []string{"rules/pages.md"}, false, false},
 		{[]string{in("admin")}, []string{"orders"}, []string{"admin/order_list.go", "admin/order_page.go", "admin/user_page.go"}, false, false},
 		{[]string{in("admin/user_page.go")}, nil, []string{"admin/user_page.go"}, false, true},

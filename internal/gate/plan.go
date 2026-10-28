@@ -221,6 +221,9 @@ func moduleContexts(sp *spec.Spec, repo string, changes []Change) []ModuleContex
 			if b := sp.TopicBrief(&m.Topics[j]); b != "" {
 				topicBriefs[b] = true
 			}
+			if tf := sp.TopicFragment(m, &m.Topics[j]); tf != "" {
+				topicBriefs[tf] = true
+			}
 		}
 		var files []string
 		var topics []TopicContext

@@ -123,30 +123,65 @@ func (s *Spec) TopicBrief(t *Topic) string {
 	return s.repoRel(filepath.Join(s.Dir, filepath.FromSlash(t.Brief.Path)))
 }
 
+// TopicFragment is the YAML fragment t of m is written in, relative to the
+// repository root, or "" when t is written in the root spec file or the spec
+// has no root.
+func (s *Spec) TopicFragment(m *Module, t *Topic) string {
+	if s.Root == "" {
+		return ""
+	}
+	f := s.Sources.TopicFile(m.Name, t.Name)
+	if f == "" {
+		f = s.Sources.ModuleFile(m.Name)
+	}
+	if f == "" {
+		return ""
+	}
+	if r := s.repoRel(f); r != s.repoRel(s.Path) {
+		return r
+	}
+	return ""
+}
+
 // TopicsTouching splits m's topics into those files touch and the rest, in
 // order. files are relative to the repository root, as a diff names them. A
-// topic is touched by a file its patterns match, by its own brief, and by
-// the fragment m is written in: an edit to a topic's rules, wherever they
-// are written, is a change to the topic. The root spec file touches none,
-// since it holds the system and, in a single-file spec, every module.
+// topic is touched directly by a file its patterns match, by its own brief,
+// or by a dedicated YAML fragment that defines the topic outside the module's
+// own fragment. When no topic of m is touched directly, a change to the
+// module's YAML fragment touches all of its topics (so a spec-only edit still
+// shows the module's topics), whereas a change that already touches specific
+// topic files or briefs alongside the module's fragment shows only the
+// directly touched topics instead of flooding the prompt with every topic.
+// The root spec file touches none, since it holds the system and, in a
+// single-file spec, every module.
 func (s *Spec) TopicsTouching(m *Module, files []string) (touched, rest []*Topic) {
-	fragment := ""
+	modFrag := ""
 	if f := s.Sources.ModuleFile(m.Name); f != "" && s.Root != "" {
 		if r := s.repoRel(f); r != s.repoRel(s.Path) {
-			fragment = r
+			modFrag = r
+		}
+	}
+	direct := make([]bool, len(m.Topics))
+	fragHit := make([]bool, len(m.Topics))
+	anyDirect := false
+	for j := range m.Topics {
+		t := &m.Topics[j]
+		brief := s.TopicBrief(t)
+		topicFrag := s.TopicFragment(m, t)
+		for _, f := range files {
+			if t.Covers(f) || (brief != "" && f == brief) || (topicFrag != "" && topicFrag != modFrag && f == topicFrag) {
+				direct[j] = true
+				anyDirect = true
+				break
+			}
+			if (topicFrag != "" && f == topicFrag) || (modFrag != "" && f == modFrag) {
+				fragHit[j] = true
+			}
 		}
 	}
 	for j := range m.Topics {
 		t := &m.Topics[j]
-		brief := s.TopicBrief(t)
-		hit := false
-		for _, f := range files {
-			if t.Covers(f) || (brief != "" && f == brief) || (fragment != "" && f == fragment) {
-				hit = true
-				break
-			}
-		}
-		if hit {
+		if direct[j] || (!anyDirect && fragHit[j]) {
 			touched = append(touched, t)
 		} else {
 			rest = append(rest, t)

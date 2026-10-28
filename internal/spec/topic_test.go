@@ -87,6 +87,68 @@ topics:
 	}
 }
 
+func TestTopicsTouchingSelectiveWhenModuleFragmentAndTopicFileChangeTogether(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod": "module example.com/shop\n",
+		"_aspect/aspect.yaml": `aspect: 1
+system:
+  name: shop
+  intent: sell
+  module_path: example.com/shop
+  goals: [{id: G1, statement: Charge once.}]
+modules:
+  - dir: modules/
+`,
+		"_aspect/modules/pay.yaml": `name: pay
+path: pay
+intent: Charge money.
+goals: [G1]
+invariants: [{id: ONE, statement: One live charge per order.}]
+topics:
+  - name: refunds
+    intent: Giving money back.
+    files: [pay/refund*.go, admin/refund_*.go]
+    invariants: [{id: REF, statement: A refund never exceeds its charge.}]
+    brief: ../../pay/rules/refunds.md
+  - file: topics/slips.yaml
+`,
+		"_aspect/modules/topics/slips.yaml": `name: slips
+intent: Boleto slips.
+files: [pay/slip*.go]
+invariants: [{id: SLIP, statement: One open slip per order.}]
+`,
+		"pay/rules/refunds.md": "Refunds go through the gateway that charged.\n",
+	})
+	s := mustLoad(t, filepath.Join(dir, "_aspect", "aspect.yaml"))
+	pay := s.Module("pay")
+	if len(pay.Topics) != 2 {
+		t.Fatalf("topics = %d, want 2", len(pay.Topics))
+	}
+	if got := s.TopicFragment(pay, &pay.Topics[0]); got != "_aspect/modules/pay.yaml" {
+		t.Errorf("TopicFragment(refunds) = %q, want _aspect/modules/pay.yaml", got)
+	}
+	if got := s.TopicFragment(pay, &pay.Topics[1]); got != "_aspect/modules/topics/slips.yaml" {
+		t.Errorf("TopicFragment(slips) = %q, want _aspect/modules/topics/slips.yaml", got)
+	}
+	// Editing a topic's covered file alongside the module's fragment must
+	// select only the directly touched topic, not every topic in the module.
+	touched, rest := s.TopicsTouching(pay, []string{"pay/refund.go", "_aspect/modules/pay.yaml"})
+	if len(touched) != 1 || touched[0].Name != "refunds" || len(rest) != 1 || rest[0].Name != "slips" {
+		t.Errorf("TopicsTouching(refund.go + pay.yaml) = %v / %v, want only [refunds]", touched, rest)
+	}
+	// Editing a dedicated topic YAML fragment selects only that topic even
+	// when the module's fragment is also in the diff.
+	touched, rest = s.TopicsTouching(pay, []string{"_aspect/modules/topics/slips.yaml", "_aspect/modules/pay.yaml"})
+	if len(touched) != 1 || touched[0].Name != "slips" || len(rest) != 1 || rest[0].Name != "refunds" {
+		t.Errorf("TopicsTouching(slips.yaml + pay.yaml) = %v / %v, want only [slips]", touched, rest)
+	}
+	// Editing ONLY the module's fragment (a spec-only edit) still touches its topics.
+	touched, _ = s.TopicsTouching(pay, []string{"_aspect/modules/pay.yaml"})
+	if len(touched) != 2 {
+		t.Errorf("TopicsTouching(pay.yaml only) = %d touched, want 2", len(touched))
+	}
+}
+
 // A module whose invariants all live in its topics is not warned that it
 // has none; one whose topics hold none still is.
 func TestTopicInvariantsSilenceTheNoInvariantsWarning(t *testing.T) {

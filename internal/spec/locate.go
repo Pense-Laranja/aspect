@@ -148,3 +148,26 @@ func (src *Sources) ModuleFile(name string) string {
 	}
 	return src.files[n]
 }
+
+// TopicFile is the file topic of module is written in (the root spec, the
+// module's fragment, or a fragment included under topics:), as the loader
+// opened it; "" when the spec was not loaded from disk or has no such topic.
+func (src *Sources) TopicFile(module, topic string) string {
+	if src == nil || src.root == nil {
+		return ""
+	}
+	m := namedEntry(src.root, "modules", module, true)
+	if m == nil {
+		return ""
+	}
+	_, seq := mapEntry(m, "topics")
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return ""
+	}
+	for _, item := range seq.Content {
+		if _, v := mapEntry(item, "name"); v != nil && v.Value == topic {
+			return src.files[item]
+		}
+	}
+	return ""
+}
