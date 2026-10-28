@@ -36,6 +36,6 @@ You are the Spec-Keeper agent. Your role is ensuring the code and the formal Asp
 
 - **Status**: Clean or Drift Detected.
 - **Findings**:
-  * Location: Spec file or code file and line.
-  * Issue: Promise broken or undocumented behavior added.
-  * Action: Code fix required or spec amendment needed.
+  * **Location**: Spec file or code file and 1-based head line number (when diff lines are prefixed with `L<n>: ` and `OLD: `, use the `L<n>:` head line number directly and never cite an `OLD:` line as a head line number).
+  * **Issue**: Promise broken or undocumented behavior added.
+  * **Action**: 3-part actionable recommendation containing `(1) Code Fix` (exact spec/brief or code edit at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).

@@ -247,3 +247,113 @@ func TestRenderKeepsTopicRulesBeforeBriefs(t *testing.T) {
 		t.Errorf("the briefs that did not fit must be named:\n%s", out)
 	}
 }
+
+func TestRenderTruncatesOperationsAndScenariosInsteadOfDropping(t *testing.T) {
+	s := load(t)
+	m := s.Module("payments")
+	for i := 0; i < 15; i++ {
+		m.Interface = append(m.Interface, spec.Operation{
+			Name:      fmt.Sprintf("Op%d", i),
+			Signature: fmt.Sprintf("Op%d(ctx Context) -> Result", i),
+			Intent:    fmt.Sprintf("Long operation intent description number %d that fills up the operation section.", i),
+			Pre:       []string{fmt.Sprintf("precondition_%d != nil", i)},
+			Post:      []string{fmt.Sprintf("postcondition_%d == true", i)},
+		})
+	}
+	coreLen := len(core(s, m, nil))
+	// Enough room for core rules + part of operations, but not all operations.
+	budget := (coreLen + omittedNoteReserve + 500) / CharsPerToken
+	out := Render(s, []string{"payments"}, Options{Budget: budget, OmitSystem: true, OmitBriefs: true})
+	if !strings.Contains(out, "### Operations") || !strings.Contains(out, "Resolve(method: string) -> Gateway") {
+		t.Fatalf("expected operations section to be partially included, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[cut to fit the size limit]") || !strings.Contains(out, "the rest of operations of payments") {
+		t.Errorf("expected operations to be cut with 'the rest of operations of payments', got:\n%s", out)
+	}
+
+	// Now give enough room for all operations and part of scenarios.
+	for i := 0; i < 15; i++ {
+		m.Scenarios = append(m.Scenarios, spec.Scenario{
+			ID:    fmt.Sprintf("SC-%d", i),
+			Given: fmt.Sprintf("given state %d with active ledger", i),
+			When:  fmt.Sprintf("when transition %d occurs", i),
+			Then:  fmt.Sprintf("then outcome %d is persisted", i),
+		})
+	}
+	opsLen := len(operations(m, nil))
+	budgetSc := (coreLen + opsLen + omittedNoteReserve + 500) / CharsPerToken
+	outSc := Render(s, []string{"payments"}, Options{Budget: budgetSc, OmitSystem: true, OmitBriefs: true})
+	if !strings.Contains(outSc, "### Scenarios") || !strings.Contains(outSc, "S1:") {
+		t.Fatalf("expected scenarios section to be partially included, got:\n%s", outSc)
+	}
+	if !strings.Contains(outSc, "[cut to fit the size limit]") || !strings.Contains(outSc, "the rest of scenarios of payments") {
+		t.Errorf("expected scenarios to be cut with 'the rest of scenarios of payments', got:\n%s", outSc)
+	}
+}
+
+func TestRenderPrioritizesFileMatchingOperationsAndScenarios(t *testing.T) {
+	s := load(t)
+	m := s.Module("payments")
+	m.Interface = []spec.Operation{
+		{Name: "ArchiveLedger", Signature: "ArchiveLedger()", Intent: "Archives old ledger entries."},
+		{Name: "IssueRefund", Signature: "IssueRefund(chargeID string)", Intent: "Issues a refund for a settled charge."},
+		{Name: "RefundWebhook", Signature: "RefundWebhook(payload []byte)", Intent: "Processes gateway refund webhook callback."},
+	}
+	m.Scenarios = []spec.Scenario{
+		{ID: "S-ARCHIVE", Given: "an old ledger", When: "archived", Then: "moved to cold storage"},
+		{ID: "S-REFUND", Given: "a settled charge", When: "refund is requested via webhook", Then: "refund is recorded"},
+	}
+
+	out := Render(s, []string{"payments"}, Options{
+		Files:      []string{"modules/payments/refundWebhook_test.go"},
+		OmitSystem: true,
+		OmitBriefs: true,
+	})
+	iWebhook := strings.Index(out, "RefundWebhook")
+	iIssue := strings.Index(out, "IssueRefund")
+	iArchive := strings.Index(out, "ArchiveLedger")
+	if iWebhook < 0 || iIssue < 0 || iArchive < 0 || !(iWebhook < iIssue && iIssue < iArchive) {
+		t.Errorf("expected RefundWebhook (score 2) < IssueRefund (score 1) < ArchiveLedger (score 0) in:\n%s", out)
+	}
+	iScRefund := strings.Index(out, "S-REFUND")
+	iScArchive := strings.Index(out, "S-ARCHIVE")
+	if iScRefund < 0 || iScArchive < 0 || iScRefund >= iScArchive {
+		t.Errorf("expected S-REFUND before S-ARCHIVE in:\n%s", out)
+	}
+	// Verify original slices on Module were not mutated in place.
+	if m.Interface[0].Name != "ArchiveLedger" || m.Scenarios[0].ID != "S-ARCHIVE" {
+		t.Errorf("module slices were mutated in place: ops[0]=%s, scs[0]=%s", m.Interface[0].Name, m.Scenarios[0].ID)
+	}
+}
+
+func TestRenderSharesBudgetFairlyAcrossMultipleModules(t *testing.T) {
+	s := load(t)
+	pay := s.Module("payments")
+	store := s.Module("store")
+	for i := 0; i < 40; i++ {
+		pay.Invariants = append(pay.Invariants, spec.Invariant{
+			ID:        fmt.Sprintf("PAY-INV-%d", i),
+			Statement: fmt.Sprintf("Payments invariant statement %d requiring strict idempotent settlement verification.", i),
+		})
+		store.Invariants = append(store.Invariants, spec.Invariant{
+			ID:        fmt.Sprintf("STORE-INV-%d", i),
+			Statement: fmt.Sprintf("Store invariant statement %d requiring strict catalog visibility verification.", i),
+		})
+	}
+	// Budget smaller than payments' rules alone, but large enough to share across both modules.
+	budget := 600
+	out := Render(s, []string{"payments", "store"}, Options{Budget: budget, OmitSystem: true, OmitBriefs: true})
+	if len(out) > budget*CharsPerToken {
+		t.Fatalf("output %d chars exceeds budget %d chars", len(out), budget*CharsPerToken)
+	}
+	for _, want := range []string{
+		"## Module payments",
+		"## Module store",
+		"the rest of the rules of payments",
+		"the rest of the rules of store",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

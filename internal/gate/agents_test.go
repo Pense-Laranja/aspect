@@ -52,6 +52,11 @@ func TestAgentExampleReports(t *testing.T) {
 				if want := name + "/"; !strings.HasPrefix(f.ID, want) {
 					t.Errorf("finding id %q should start with %q", f.ID, want)
 				}
+				for _, part := range []string{"Code Fix", "Contract/Stamp/Lock Check", "Regression Test Anchor"} {
+					if !strings.Contains(f.Recommendation, part) {
+						t.Errorf("finding %q recommendation missing %q: %q", f.ID, part, f.Recommendation)
+					}
+				}
 			}
 		})
 	}
@@ -87,6 +92,52 @@ func TestAgentPromptsAreSelfContainedAndScoped(t *testing.T) {
 			}
 			if !strings.Contains(text, "aspect-review/v1") {
 				t.Errorf("%s does not document 'aspect-review/v1' schema", name)
+			}
+			for _, part := range []string{"Code Fix", "Contract/Stamp/Lock Check", "Regression Test Anchor"} {
+				if !strings.Contains(text, part) {
+					t.Errorf("%s does not document %q in recommendation rules", name, part)
+				}
+			}
+		})
+	}
+}
+
+func TestGeminiReviewSubagentsDocumentActionableRecommendations(t *testing.T) {
+	subagents := []string{
+		"adversarial_reviewer.md",
+		"quality_reviewer.md",
+		"security_reviewer.md",
+		"spec_keeper.md",
+		"test_adequacy_reviewer.md",
+		"test_evaluator.md",
+	}
+	pluginDir := "/Users/eider/.gemini/config/plugins/aspect/agents"
+	hasPluginDir := false
+	if st, err := os.Stat(pluginDir); err == nil && st.IsDir() {
+		hasPluginDir = true
+	}
+	for _, name := range subagents {
+		t.Run(name, func(t *testing.T) {
+			repoFile := filepath.Join("..", "..", ".agents", "agents", name)
+			b, err := os.ReadFile(repoFile)
+			if err != nil {
+				t.Fatalf("read %s: %v", repoFile, err)
+			}
+			text := string(b)
+			for _, part := range []string{"Code Fix", "Contract/Stamp/Lock Check", "Regression Test Anchor"} {
+				if !strings.Contains(text, part) {
+					t.Errorf("%s missing %q", repoFile, part)
+				}
+			}
+			if hasPluginDir {
+				pluginFile := filepath.Join(pluginDir, name)
+				pb, err := os.ReadFile(pluginFile)
+				if err != nil {
+					t.Fatalf("read plugin copy %s: %v", pluginFile, err)
+				}
+				if string(pb) != text {
+					t.Errorf("plugin copy %s is out of sync with %s", pluginFile, repoFile)
+				}
 			}
 		})
 	}

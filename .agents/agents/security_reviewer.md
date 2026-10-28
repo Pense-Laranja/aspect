@@ -36,4 +36,8 @@ You are the Security Reviewer. You examine code changes for vulnerabilities, unt
 
 ## Output Format
 
-Report any issues with exact location, severity (`critical`, `high`, `medium`, `low`), vulnerability type, and remediation steps.
+Report any issues with:
+- **Location**: Exact file and 1-based head line number (when diff lines are prefixed with `L<n>: ` and `OLD: `, use the `L<n>:` head line number directly and never cite an `OLD:` line as a head line number).
+- **Severity**: `critical`, `high`, `medium`, or `low`.
+- **Vulnerability Type & Trace**: Static source-to-sink trace.
+- **Remediation**: 3-part actionable recommendation containing `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).

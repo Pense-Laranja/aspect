@@ -44,7 +44,8 @@ for a caller to use the newly designed abstractions.
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity Ladder & Floors:**
    - **Invariant Floor:** Any proven violation of an explicit spec invariant (`modules:` / `_aspect/`) is at least `high` with `confidence >= 0.8` and must cite `spec_ref`.
@@ -107,7 +108,7 @@ For each finding, show how a caller suffers friction or risks a bug and provide 
       "spec_ref": "interfaces.api",
       "evidence": "In pkg/client/client.go:22, `func Connect(host, username, password, database string)` takes four consecutive string parameters. A caller can easily invert `host` and `database` without any compiler or type checker feedback.",
       "reproduction": "",
-      "recommendation": "Use a config struct: `type ConnectOptions struct { Host, Username, Password, Database string }` and `func Connect(opts ConnectOptions) (*Client, error)`.",
+      "recommendation": "(1) Code Fix: In `Connect` at `pkg/client/client.go:22`, accept `ConnectOptions{Host, Username, Password, Database string}` instead of four positional strings. (2) Contract/Stamp/Lock Check: Update `interfaces.api` signature in the module spec to match `Connect(opts ConnectOptions)`. (3) Regression Test Anchor: Add `TestConnect_OptionsValidation` in `pkg/client/client_test.go`.",
       "confidence": 0.95
     }
   ],

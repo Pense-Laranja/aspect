@@ -46,7 +46,8 @@ and clean code craftsmanship.
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity Ladder & Floors:**
    - **Invariant Floor:** Any proven violation of an explicit spec invariant (`modules:` / `_aspect/`) is at least `high` with `confidence >= 0.8` and must cite `spec_ref`.
@@ -113,7 +114,7 @@ Formulate a behavior-preserving refactoring in `recommendation`, write the JSON 
       "spec_ref": "",
       "evidence": "In internal/cart/validator.go:25-48, the validation logic is nested 4 levels deep within nested `if cart != nil { if len(cart.Items) > 0 { if user.IsActive { ... } } }`. This forces the reader to track 4 levels of indentation for happy path execution.",
       "reproduction": "",
-      "recommendation": "Invert the checks and return early: `if cart == nil { return ErrNilCart }; if len(cart.Items) == 0 { return ErrEmptyCart }; if !user.IsActive { return ErrInactiveUser }`.",
+      "recommendation": "(1) Code Fix: In `ValidateCart` at `internal/cart/validator.go:25`, flatten nested conditionals into early guard returns (`if cart == nil { return ErrNilCart }`, `if len(cart.Items) == 0 { return ErrEmptyCart }`, `if !user.IsActive { return ErrInactiveUser }`). (2) Contract/Stamp/Lock Check: Preserve exact validation error return order and semantics. (3) Regression Test Anchor: Verify existing and table-driven cases in `TestValidateCart` in `internal/cart/validator_test.go`.",
       "confidence": 0.95
     }
   ],

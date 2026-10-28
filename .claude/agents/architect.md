@@ -45,7 +45,8 @@ layering, dependency flow, extensibility, and systemic tech debt.
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity Ladder & Floors:**
    - `critical`: Architectural flaw causing data loss or making a system goal unachievable.
@@ -116,7 +117,7 @@ Write the JSON report to `out` and print the exact same JSON in the final fenced
       "spec_ref": "interfaces.api.users",
       "evidence": "In internal/api/users.go:34, GetUserProfile returns `store.GormUser` directly to the JSON encoder. This couples database schema tags and internal columns (e.g. hashed passwords, internal metadata) to the external API contract.",
       "reproduction": "",
-      "recommendation": "Map `store.GormUser` to a dedicated `api.UserDTO` view model before serializing.",
+      "recommendation": "(1) Code Fix: In `GetUserProfile` at `internal/api/users.go:34`, map `store.GormUser` to a dedicated `api.UserDTO` struct before encoding JSON. (2) Contract/Stamp/Lock Check: Enforce `interfaces.api.users` boundary so `internal/store` persistence fields never leak into API responses. (3) Regression Test Anchor: Add `TestGetUserProfile_OmitsInternalStoreFields` in `internal/api/users_test.go`.",
       "confidence": 0.9
     }
   ],
