@@ -228,6 +228,10 @@ func TestRenderShowsTheTopicsOfTheFiles(t *testing.T) {
 	if out := Render(s, []string{"payments"}, Options{}); strings.Contains(out, "REF-CAP") || !strings.Contains(out, "- refunds: Giving money back.") {
 		t.Errorf("no files must show no topic and name them all:\n%s", out)
 	}
+	// Explicit Topics option selects named topic(s) without showing untouched topics.
+	if out := Render(s, []string{"payments"}, Options{Topics: []string{"payments:slips"}}); !strings.Contains(out, "One open slip per order.") || strings.Contains(out, "REF-CAP") {
+		t.Errorf("Options.Topics must show only the requested topic:\n%s", out)
+	}
 }
 
 func TestRenderKeepsTopicRulesBeforeBriefs(t *testing.T) {

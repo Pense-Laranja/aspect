@@ -28,6 +28,7 @@ func runContext(path string, args []string) error {
 	budget := fs.Int("budget", 0, "the most tokens to print (0: no limit)")
 	system := fs.Bool("system", true, "include the system's constraints")
 	briefs := fs.Bool("briefs", true, "include the modules' briefs")
+	topicFlag := fs.String("topic", "", "comma-separated topic names to show (or pass <module>:<topic> as an argument)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -42,14 +43,22 @@ func runContext(path string, args []string) error {
 	if root == "" {
 		root = s.Root
 	}
-	names, files, byName, unowned := modulesFor(s, root, fs.Args())
+	names, files, topics, byName, unowned := modulesForWithTopics(s, root, fs.Args())
+	if *topicFlag != "" {
+		for _, t := range strings.Split(*topicFlag, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				topics = append(topics, t)
+			}
+		}
+		byName = false
+	}
 	for _, a := range unowned {
 		fmt.Fprintf(os.Stderr, "aspect: no module of the spec owns %s\n", a)
 	}
 	if len(names) == 0 {
 		return exitCode{code: 1, msg: "nothing to show"}
 	}
-	fmt.Print(speccontext.Render(s, names, speccontext.Options{Budget: *budget, OmitSystem: !*system, OmitBriefs: !*briefs, Files: files, AllTopics: byName}))
+	fmt.Print(speccontext.Render(s, names, speccontext.Options{Budget: *budget, OmitSystem: !*system, OmitBriefs: !*briefs, Files: files, Topics: topics, AllTopics: byName}))
 	return nil
 }
 
@@ -63,6 +72,14 @@ func runContext(path string, args []string) error {
 // shown; byName says an argument named a module, whose topics are then all
 // shown.
 func modulesFor(s *spec.Spec, root string, args []string) (names, files []string, byName bool, unowned []string) {
+	names, files, _, byName, unowned = modulesForWithTopics(s, root, args)
+	return names, files, byName, unowned
+}
+
+// modulesForWithTopics is modulesFor plus `<module>:<topic>` (or `<topic>`
+// when a single module in the spec defines that topic) arguments, which add
+// the module and select that topic without setting byName.
+func modulesForWithTopics(s *spec.Spec, root string, args []string) (names, files, topics []string, byName bool, unowned []string) {
 	rootAbs, _ := filepath.Abs(root)
 	seen := map[string]bool{}
 	add := func(name string) {
@@ -70,6 +87,37 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, files []string
 			names = append(names, name)
 			seen[name] = true
 		}
+	}
+	matchTopicArg := func(arg string) bool {
+		if modName, topicName, ok := strings.Cut(arg, ":"); ok && modName != "" && topicName != "" {
+			m := s.Module(modName)
+			if m == nil {
+				return false
+			}
+			for j := range m.Topics {
+				if m.Topics[j].Name == topicName {
+					add(m.Name)
+					topics = append(topics, m.Name+":"+topicName)
+					return true
+				}
+			}
+			return false
+		}
+		var matched []*spec.Module
+		for _, m := range s.AllModules() {
+			for j := range m.Topics {
+				if m.Topics[j].Name == arg {
+					matched = append(matched, m)
+					break
+				}
+			}
+		}
+		if len(matched) == 1 {
+			add(matched[0].Name)
+			topics = append(topics, matched[0].Name+":"+arg)
+			return true
+		}
+		return false
 	}
 	// addTouching adds the modules whose topics file touches, and says
 	// whether there was one, whether or not it was added before.
@@ -90,7 +138,7 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, files []string
 			if s.Module(a) != nil {
 				add(a)
 				byName = true
-			} else {
+			} else if !matchTopicArg(a) {
 				unowned = append(unowned, a)
 			}
 			continue
@@ -135,7 +183,7 @@ func modulesFor(s *spec.Spec, root string, args []string) (names, files []string
 			unowned = append(unowned, a)
 		}
 	}
-	return names, files, byName, unowned
+	return names, files, topics, byName, unowned
 }
 
 // runBriefs points modules' briefs at their packages' own ASPECT.md, read
