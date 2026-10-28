@@ -38,7 +38,8 @@ spec's intent, as well as how.
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact doc/help text edit at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref` or CLI flag contract if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go` or doc verification check).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity Calibration:**
    - A documented command or flag that fails as written is `high` (`confidence >= 0.8`).

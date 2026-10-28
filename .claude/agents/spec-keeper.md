@@ -47,7 +47,8 @@ system.
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` (or whole-file `{"file": "<head-path>"}`) and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` (or whole-file `{"file": "<head-path>"}`) and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact spec/brief or code edit at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity & Invariant Floor:**
    - A change that breaks a declared invariant or alters observable behaviour without keeping the spec in lockstep is `high` with `confidence >= 0.8` and must cite `spec_ref`.
@@ -95,7 +96,7 @@ system.
       "spec_ref": "gate.invariants[0]",
       "evidence": "internal/gate/plan.go:318 adds !-prefixed negative glob exclusions to matchAny and checkPattern, and internal/gate/config.go:127 requires at least one positive pattern, but _aspect/modules/gate.yaml does not document negative path exclusions or the positive-pattern constraint.",
       "reproduction": "aspect drift _aspect/aspect.yaml -repo . -no-llm",
-      "recommendation": "Add invariant to _aspect/modules/gate.yaml: 'Every gate paths list and non-empty when.or_touches list must contain at least one positive glob pattern; !-prefixed patterns exclude matching paths regardless of order.'",
+      "recommendation": "(1) Code Fix: Add invariant to `_aspect/modules/gate.yaml` documenting `!`-prefixed negative glob exclusions and the positive-pattern requirement from `internal/gate/plan.go:318`. (2) Contract/Stamp/Lock Check: Keep `gate.invariants[0]` in `_aspect/modules/gate.yaml` aligned with `gate.LoadConfig` validation. (3) Regression Test Anchor: Verify `TestPlanNegatedGlobs` in `internal/gate/gate_test.go`.",
       "confidence": 0.95
     }
   ],

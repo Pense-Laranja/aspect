@@ -42,9 +42,9 @@ Assume subtle defects exist on reachable code paths and actively search for them
 ## Output Format
 
 For every defect found, report:
-- **Location**: Exact file and line number.
+- **Location**: Exact file and 1-based head line number (when diff lines are prefixed with `L<n>: ` and `OLD: `, use the `L<n>:` head line number directly and never cite an `OLD:` line as a head line number).
 - **Severity**: `critical`, `high`, `medium`, or `low`.
 - **Description**: How the bug is triggered and its impact.
 - **Reproduction**: Static caller-to-line trace (input -> call path -> failing line) or targeted test command.
-- **Remediation**: Recommended fix.
+- **Remediation**: 3-part actionable recommendation containing `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
 If no defects are found, state clearly that adversarial verification passed.

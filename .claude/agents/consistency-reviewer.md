@@ -43,7 +43,8 @@ internal consistency with the patterns already established in this codebase.
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity Ladder & Floors:**
    - **Invariant Floor:** Any proven violation of an explicit spec invariant or repository architecture mandate is at least `high` with `confidence >= 0.8` and must cite `spec_ref`.
@@ -104,7 +105,7 @@ For each finding, cite both the diverging line in the head file and the sibling 
       "spec_ref": "",
       "evidence": "In internal/store/repository.go:28, NewRepository returns `errors.New(\"invalid store config\")`. Throughout internal/store (e.g. internal/store/store.go:14, internal/store/user.go:19), this package defines package-level sentinel errors `var ErrInvalidConfig = errors.New(\"...\")` to allow callers to use `errors.Is`.",
       "reproduction": "",
-      "recommendation": "Declare `var ErrInvalidConfig = errors.New(\"invalid store config\")` in internal/store/errors.go and return that sentinel error.",
+      "recommendation": "(1) Code Fix: In `NewRepository` at `internal/store/repository.go:28`, declare `var ErrInvalidConfig = errors.New(\"invalid store config\")` in `internal/store/errors.go` and return `ErrInvalidConfig`. (2) Contract/Stamp/Lock Check: Preserve `errors.Is` error-matching contract across `internal/store` constructors. (3) Regression Test Anchor: Add `TestNewRepository_InvalidConfigReturnsSentinelError` in `internal/store/repository_test.go`.",
       "confidence": 0.95
     }
   ],

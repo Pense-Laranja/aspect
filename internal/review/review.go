@@ -54,9 +54,9 @@ Output ONLY one JSON object, exactly these keys and types:
       "severity": "<%s>",
       "category": "<%s>",
       "title": "<string>",
-      "location": {"file": "<path in the head version>", "line": <1-based integer>},
+      "location": {"file": "<path in the head version>", "line": <1-based integer from the L<n>: prefix>},
       "evidence": "<string>",
-      "recommendation": "<string>",
+      "recommendation": "<(1) Code Fix: ... (2) Contract/Stamp/Lock Check: ... (3) Regression Test Anchor: ...>",
       "confidence": <number from 0 to 1>
     }
   ],

@@ -48,7 +48,8 @@ the system?"
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity Ladder & Floors:**
    - `critical`: Remote code execution, unauthenticated data theft/corruption, arbitrary file write outside workspace, full auth bypass.
@@ -111,7 +112,7 @@ Write the JSON report to `out` and print the exact same JSON in the final fenced
       "spec_ref": "interfaces.api; database.entities.Order",
       "evidence": "In cmd/api/orders.go:58, GetOrder extracts orderID from the URL parameter and executes `db.Find(&order, orderID)` without filtering by `tenant_id = session.TenantID`. An authenticated user from tenant A can supply the ID of an order belonging to tenant B and retrieve complete order details.",
       "reproduction": "curl -H 'Authorization: Bearer <tenant_a_token>' http://localhost:8080/orders/<tenant_b_order_id>",
-      "recommendation": "Filter by tenant: `db.Where(\"id = ? AND tenant_id = ?\", orderID, session.TenantID).First(&order)`.",
+      "recommendation": "(1) Code Fix: In `GetOrder` at `cmd/api/orders.go:58`, scope the query by tenant: `db.Where(\"id = ? AND tenant_id = ?\", orderID, session.TenantID).First(&order)`. (2) Contract/Stamp/Lock Check: Uphold `database.entities.Order` tenant-isolation invariant on all order lookups. (3) Regression Test Anchor: Add `TestGetOrder_RejectsCrossTenantAccess` in `cmd/api/orders_test.go`.",
       "confidence": 0.95
     }
   ],

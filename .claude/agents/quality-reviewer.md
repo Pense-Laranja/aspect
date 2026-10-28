@@ -46,7 +46,8 @@ reliability.
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity Ladder & Floors:**
    - `critical`: Silent data loss/corruption or unrecoverable crash on a normal path.
@@ -115,7 +116,7 @@ Verify each candidate issue in the head file using `Read`, trace the exact calle
       "spec_ref": "",
       "evidence": "In internal/client/catalog.go:48, when `resp.StatusCode != 200`, the function returns an error at line 52 before the `defer resp.Body.Close()` statement on line 55. This leaks HTTP connections on any non-200 response.",
       "reproduction": "",
-      "recommendation": "Move `defer resp.Body.Close()` immediately after the `http.Get` call and nil error check on line 46.",
+      "recommendation": "(1) Code Fix: In `FetchCatalog` at `internal/client/catalog.go:46`, move `defer resp.Body.Close()` immediately after the `http.Get` error check before line 48. (2) Contract/Stamp/Lock Check: Ensure HTTP transport connection pool is not leaked on non-200 status codes. (3) Regression Test Anchor: Add `TestFetchCatalog_ClosesBodyOnNon200Status` in `internal/client/catalog_test.go`.",
       "confidence": 0.95
     }
   ],

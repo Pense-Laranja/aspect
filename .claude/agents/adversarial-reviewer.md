@@ -45,7 +45,8 @@ interleaving that triggers it, and prove it."
    - `category`: `correctness` | `spec-drift` | `security` | `performance` |
      `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` |
      `observability` | `contract` | `i18n`.
-   - `location`: required above `info` (`{"file": "<head-path>", "line": <1-based>}`).
+   - `location`: required above `info` (`{"file": "<head-path>", "line": <1-based>}`). When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line` and never cite an `OLD:` line as a head line number.
+   - `recommendation`: required 3-part actionable format for every finding above `info`: `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - `confidence`: number in `[0, 1]`. Below `0.5` never blocks.
    - `changes`: `[]` in `gate` and `advisory` modes.
    - **Never include a `verdict` key;** `aspect gate check` computes the verdict.
@@ -178,7 +179,7 @@ and print the exact same JSON in the final fenced ````json block of your respons
       "spec_ref": "parser.invariants[0]",
       "evidence": "In internal/parser/record.go:42, line 42 accesses payload.Header.Flags without checking if payload.Header is nil. When payload is created with empty headers via NewPayload(), payload.Header is nil, triggering a nil pointer dereference panic.",
       "reproduction": "go test ./internal/parser -run TestParseRecord_EmptyHeader",
-      "recommendation": "Add a guard clause: if payload.Header == nil { return ErrMissingHeader } before line 42.",
+      "recommendation": "(1) Code Fix: In ParseRecord at internal/parser/record.go:42, add guard `if payload.Header == nil { return ErrMissingHeader }` before dereferencing `payload.Header.Flags`. (2) Contract/Stamp/Lock Check: Uphold `parser.invariants[0]` so nil headers fail closed without mutating parser state. (3) Regression Test Anchor: Add `TestParseRecord_EmptyHeader` in `internal/parser/record_test.go` passing `NewPayload()` with a nil header.",
       "confidence": 0.95
     }
   ],

@@ -20,9 +20,12 @@
 package speccontext
 
 import (
+	"cmp"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/eideroliveira/aspect/internal/spec"
 )
@@ -168,11 +171,11 @@ func Render(s *spec.Spec, modules []string, opt Options) string {
 		appendTopicBriefs()
 	}
 	for i, m := range mods {
-		if t := operations(m); t != "" {
-			parts = append(parts, part{module: i, kind: kindOperations, label: "operations of " + m.Name, text: t})
+		if t := operations(m, opt.Files); t != "" {
+			parts = append(parts, part{module: i, kind: kindOperations, label: "operations of " + m.Name, text: t, truncatable: true})
 		}
-		if t := scenarios(m); t != "" {
-			parts = append(parts, part{module: i, kind: kindScenarios, label: "scenarios of " + m.Name, text: t})
+		if t := scenarios(m, opt.Files); t != "" {
+			parts = append(parts, part{module: i, kind: kindScenarios, label: "scenarios of " + m.Name, text: t, truncatable: true})
 		}
 	}
 	if !opt.OmitBriefs {
@@ -222,7 +225,7 @@ func fit(parts []part, budget int) (kept []part, omitted []string) {
 	}
 	room := budget*CharsPerToken - omittedNoteReserve
 	dropped := map[int]bool{}
-	for _, p := range parts {
+	for idx, p := range parts {
 		switch {
 		case p.kind != kindCore && p.kind != kindSystem && dropped[p.module]:
 			omitted = append(omitted, p.label)
@@ -230,10 +233,26 @@ func fit(parts []part, budget int) (kept []part, omitted []string) {
 			kept = append(kept, p)
 			room -= len(p.text) + 1
 		case p.truncatable && room > minCutRoom:
-			cut := p.text[:runeStart(p.text, room-cutMarkerReserve)]
+			partRoom := room
+			if p.kind == kindCore || p.kind == kindTopic {
+				remRules := 0
+				for _, q := range parts[idx:] {
+					if (q.kind == kindCore || q.kind == kindTopic) && !dropped[q.module] {
+						remRules++
+					}
+				}
+				if remRules > 1 && room/remRules >= minCutRoom+cutMarkerReserve {
+					partRoom = room / remRules
+				}
+			}
+			cut := p.text[:runeStart(p.text, max(0, partRoom-cutMarkerReserve))]
 			p.text = cut + "\n[cut to fit the size limit]\n"
 			kept = append(kept, p)
-			room = 0
+			if partRoom < room {
+				room = max(0, room-(len(p.text)+1))
+			} else {
+				room = 0
+			}
 			omitted = append(omitted, "the rest of "+p.label)
 		default:
 			omitted = append(omitted, p.label)
@@ -357,13 +376,101 @@ func core(s *spec.Spec, m *spec.Module, hidden []*spec.Topic) string {
 	return b.String()
 }
 
-func operations(m *spec.Module) string {
+var stemStopWords = map[string]bool{
+	"go": true, "test": true, "tests": true, "internal": true,
+	"pkg": true, "cmd": true, "mod": true, "modules": true, "src": true,
+}
+
+func splitTokens(s string) []string {
+	var out []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, string(cur))
+			cur = cur[:0]
+		}
+	}
+	runes := []rune(s)
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			flush()
+			continue
+		}
+		if len(cur) > 0 && unicode.IsUpper(r) {
+			prev := cur[len(cur)-1]
+			nextLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) || (unicode.IsUpper(prev) && nextLower) {
+				flush()
+			}
+		}
+		cur = append(cur, r)
+	}
+	flush()
+	return out
+}
+
+func fileStems(files []string) []string {
+	var stems []string
+	seen := map[string]bool{}
+	for _, f := range files {
+		for _, raw := range splitTokens(f) {
+			tok := strings.ToLower(raw)
+			if len(tok) < 3 || stemStopWords[tok] || seen[tok] {
+				continue
+			}
+			seen[tok] = true
+			stems = append(stems, tok)
+		}
+	}
+	return stems
+}
+
+func scoreText(stems []string, fields ...string) int {
+	if len(stems) == 0 {
+		return 0
+	}
+	joined := strings.ToLower(strings.Join(fields, " "))
+	score := 0
+	for _, stem := range stems {
+		if strings.Contains(joined, stem) {
+			score++
+		}
+	}
+	return score
+}
+
+func operations(m *spec.Module, files []string) string {
 	if len(m.Interface) == 0 {
 		return ""
 	}
+	ops := m.Interface
+	if stems := fileStems(files); len(stems) > 0 {
+		type scoredOp struct {
+			op    spec.Operation
+			score int
+		}
+		scored := make([]scoredOp, len(ops))
+		anyMatch := false
+		for i, op := range ops {
+			sc := scoreText(stems, op.Name, op.Signature, op.Intent, strings.Join(op.Pre, " "), strings.Join(op.Post, " "))
+			if sc > 0 {
+				anyMatch = true
+			}
+			scored[i] = scoredOp{op: op, score: sc}
+		}
+		if anyMatch {
+			slices.SortStableFunc(scored, func(a, b scoredOp) int {
+				return cmp.Compare(b.score, a.score)
+			})
+			ops = make([]spec.Operation, len(scored))
+			for i, s := range scored {
+				ops[i] = s.op
+			}
+		}
+	}
 	var b strings.Builder
 	b.WriteString("### Operations\n\n")
-	for _, op := range m.Interface {
+	for _, op := range ops {
 		fmt.Fprintf(&b, "- `%s`", op.Signature)
 		if op.Intent != "" {
 			fmt.Fprintf(&b, ": %s", oneLine(op.Intent))
@@ -379,13 +486,38 @@ func operations(m *spec.Module) string {
 	return b.String()
 }
 
-func scenarios(m *spec.Module) string {
+func scenarios(m *spec.Module, files []string) string {
 	if len(m.Scenarios) == 0 {
 		return ""
 	}
+	scs := m.Scenarios
+	if stems := fileStems(files); len(stems) > 0 {
+		type scoredSc struct {
+			sc    spec.Scenario
+			score int
+		}
+		scored := make([]scoredSc, len(scs))
+		anyMatch := false
+		for i, sc := range scs {
+			s := scoreText(stems, sc.ID, sc.Given, sc.When, sc.Then)
+			if s > 0 {
+				anyMatch = true
+			}
+			scored[i] = scoredSc{sc: sc, score: s}
+		}
+		if anyMatch {
+			slices.SortStableFunc(scored, func(a, b scoredSc) int {
+				return cmp.Compare(b.score, a.score)
+			})
+			scs = make([]spec.Scenario, len(scored))
+			for i, s := range scored {
+				scs[i] = s.sc
+			}
+		}
+	}
 	var b strings.Builder
 	b.WriteString("### Scenarios\n\n")
-	for _, sc := range m.Scenarios {
+	for _, sc := range scs {
 		fmt.Fprintf(&b, "- %s:", sc.ID)
 		if sc.Given != "" {
 			fmt.Fprintf(&b, " given %s;", oneLine(sc.Given))

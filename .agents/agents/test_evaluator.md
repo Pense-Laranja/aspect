@@ -51,4 +51,4 @@ End your evaluation with a clear verdict:
 - **Functional Testing**: Status of functional and integration tests.
 - **Unit Coverage**: Status of branch coverage and edge cases.
 - **Efficiency & Speed**: Assessment of test execution time and anti-patterns.
-- **Deficiencies & Actionable Plan**: File, line, and specific test scenarios that must be added or fixed.
+- **Deficiencies & Actionable Plan**: For each deficiency, report the exact file and 1-based head line number (using `L<n>:` when diff lines are annotated with `L<n>: ` and `OLD: `) and a 3-part actionable recommendation containing `(1) Code Fix` (exact test or production code edit at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).

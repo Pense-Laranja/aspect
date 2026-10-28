@@ -37,4 +37,9 @@ You are the Quality & Reliability Reviewer. You examine code changes to ensure h
 
 ## Output Format
 
-Report any issues with exact location, severity, description, and remediation. If all checks pass, report clean.
+Report any issues with:
+- **Location**: Exact file and 1-based head line number (when diff lines are prefixed with `L<n>: ` and `OLD: `, use the `L<n>:` head line number directly and never cite an `OLD:` line as a head line number).
+- **Severity**: `critical`, `high`, `medium`, or `low`.
+- **Description**: Static caller-to-line trace of the defect.
+- **Remediation**: 3-part actionable recommendation containing `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
+If all checks pass, report clean.

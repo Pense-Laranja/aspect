@@ -48,7 +48,8 @@ change, or disrupt if a guard is missing?"
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity Ladder & Floors:**
    - `critical`: Remote code execution, unauthenticated data breach, full auth bypass, arbitrary file write outside workspace.
@@ -118,7 +119,7 @@ Write the JSON report to `out` and print the exact same JSON in the final fenced
       "spec_ref": "interfaces.api",
       "evidence": "In internal/api/files.go:32, DownloadFile constructs target path with `filepath.Join(uploadDir, req.Filename)` without verifying that the cleaned path remains inside uploadDir. A caller can supply `../../../../etc/passwd` to escape the directory and read arbitrary system files.",
       "reproduction": "curl 'http://localhost:8080/files/download?filename=../../../../etc/passwd'",
-      "recommendation": "Clean and verify prefix: `clean := filepath.Clean(filepath.Join(uploadDir, req.Filename)); if !strings.HasPrefix(clean, filepath.Clean(uploadDir)+string(filepath.Separator)) { return ErrInvalidPath }`.",
+      "recommendation": "(1) Code Fix: In `DownloadFile` at `internal/api/files.go:32`, clean and verify containment: `clean := filepath.Clean(filepath.Join(uploadDir, req.Filename)); if !strings.HasPrefix(clean, filepath.Clean(uploadDir)+string(filepath.Separator)) { return ErrInvalidPath }`. (2) Contract/Stamp/Lock Check: Enforce `interfaces.api` path-containment boundary before opening filesystem handles. (3) Regression Test Anchor: Add `TestDownloadFile_RejectsPathTraversal` in `internal/api/files_test.go`.",
       "confidence": 0.95
     }
   ],

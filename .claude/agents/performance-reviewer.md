@@ -25,7 +25,8 @@ You are the **performance-reviewer** review agent. Your role is identifying scal
    - Copy `base` and `head` verbatim from the change block. Never include a `verdict` key.
    - Allowed `severity`: `critical` | `high` | `medium` | `low` | `info`.
    - Allowed `category`: `correctness` | `spec-drift` | `security` | `performance` | `design` | `test-gap` | `docs` | `data` | `readability` | `consistency` | `observability` | `contract` | `i18n`.
-   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`.
+   - Every finding above `info` requires `location: {"file": "<head-path>", "line": <1-based>}` and `confidence` in `[0, 1]`. When diff lines are prefixed with `L<n>: ` (head line number) and `OLD: ` (removed base line), use the `L<n>:` number directly for `location.line`.
+   - Every finding above `info` requires a 3-part actionable `recommendation`: `(1) Code Fix` (exact function, guard, or state transition at `file:line`), `(2) Contract/Stamp/Lock Check` (matching `spec_ref`, cache-key, stamp, or concurrency lock if applicable), and `(3) Regression Test Anchor` (exact `Test...` function in `*_test.go`).
    - Write the JSON report to `out` and print the exact same JSON as the final fenced ````json` block.
 4. **Severity Ladder & Floors:**
    - **User-Reachable Floor:** Any proven defect reachable on a normal path must be at least `high` with `confidence >= 0.8`.
@@ -100,7 +101,7 @@ Write the JSON report to `out` and print the exact same JSON in the final fenced
       "spec_ref": "",
       "evidence": "The resource-scaling issue at path/to/file.go:105 and how cost grows with input size.",
       "reproduction": "Static complexity trace showing how N inputs trigger quadratic work or unbounded memory.",
-      "recommendation": "The bounded implementation, e.g. a limit, a timeout or a streamed read.",
+      "recommendation": "(1) Code Fix: In `path/to/file.go:105`, bound the stream with `io.LimitReader(r, maxPayloadBytes)` and hoist `regexp.MustCompile` to package scope. (2) Contract/Stamp/Lock Check: Release the mutex before performing network I/O to prevent lock contention. (3) Regression Test Anchor: Add `TestReadPayload_BoundsMemoryOnLargeInput` in `path/to/file_test.go`.",
       "confidence": 0.9
     }
   ],

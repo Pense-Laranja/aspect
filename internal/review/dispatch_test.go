@@ -43,6 +43,50 @@ func TestParsingKeepsEveryByte(t *testing.T) {
 	}
 }
 
+func TestSplitReviewableAnnotatesHeadLineNumbers(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/pkg/foo.go b/pkg/foo.go",
+		"--- a/pkg/foo.go",
+		"+++ b/pkg/foo.go",
+		"@@ -10,4 +20,5 @@ func foo() {",
+		" \tctxLine1()",
+		"-\toldCall()",
+		"+\tnewCall1()",
+		"+\tnewCall2()",
+		" \tctxLine2()",
+		"@@ -1 +1 @@",
+		"-singleOld",
+		"+singleNew",
+		`\ No newline at end of file`,
+		"@@ malformed header @@",
+		"+unannotated",
+		"",
+	}, "\n")
+
+	s := splitReviewable(diff)
+	if len(s.files) != 1 {
+		t.Fatalf("files = %d, want 1", len(s.files))
+	}
+	got := s.files[0].text()
+	for _, want := range []string{
+		"@@ -10,4 +20,5 @@ func foo() {\n",
+		"L20:  \tctxLine1()\n",
+		"OLD: -\toldCall()\n",
+		"L21: +\tnewCall1()\n",
+		"L22: +\tnewCall2()\n",
+		"L23:  \tctxLine2()\n",
+		"@@ -1 +1 @@\n",
+		"OLD: -singleOld\n",
+		"L1: +singleNew\n",
+		"\\ No newline at end of file\n",
+		"@@ malformed header @@\n+unannotated\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("annotated diff missing %q in:\n%s", want, got)
+		}
+	}
+}
+
 func TestUnreviewableFilesBecomeStubs(t *testing.T) {
 	text := fileDiffText("app/main.go", 1, 3, "x = 1") +
 		fileDiffText("web/vendor/pdfjs/pdf.js", 1, 3, "x = 1") +
