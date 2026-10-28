@@ -272,12 +272,12 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	// that made them, so a sum over runs counts it once.
 	status.Set("total_cost_usd", 0)
 	status.Set("total_tokens", 0)
-	status.Set("usage", map[string]any{"total_cost_usd": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+	status.Set("usage", map[string]any{"total_cost_usd": 0, "prompt_tokens": 0, "cached_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
 	if agents, ok := status.Get("agents").(*Object); ok {
 		for _, name := range agents.Keys() {
 			if a, ok := agents.Get(name).(*Object); ok {
 				a.Set("cost_usd", 0)
-				a.Set("tokens", map[string]any{"prompt": 0, "completion": 0, "total": 0})
+				a.Set("tokens", map[string]any{"prompt": 0, "cached": 0, "completion": 0, "total": 0})
 				a.Set("duration_seconds", 0)
 			}
 		}

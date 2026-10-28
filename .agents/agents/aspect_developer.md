@@ -17,7 +17,6 @@ tools:
   - read_url_content
   - search_web
   - ask_question
-  - call_mcp_tool
 ---
 
 # Aspect Lead Developer Orchestrator

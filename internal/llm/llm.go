@@ -41,6 +41,8 @@ type Request struct {
 	// JSON asks for an answer that is one JSON object, without a schema.
 	// Clients that cannot enforce it leave it to the prompt.
 	JSON bool
+	// ThinkingBudget, when non-nil, caps the model's thinking tokens.
+	ThinkingBudget *int
 }
 
 // Response is the model's answer plus accounting.

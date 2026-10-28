@@ -69,7 +69,9 @@ func (f *fakeModel) Complete(ctx context.Context, req llm.Request) (llm.Response
 	}
 	switch a := answer.(type) {
 	case string:
-		return llm.Response{Text: a, Model: "flash", InputTokens: 100, OutputTokens: 10}, nil
+		return llm.Response{Text: a, Model: "flash", InputTokens: 100, CacheReadTokens: 80, OutputTokens: 10}, nil
+	case llm.Response:
+		return a, nil
 	case error:
 		if a == hang {
 			<-ctx.Done()
@@ -222,6 +224,21 @@ func TestAllGatesCleanPasses(t *testing.T) {
 	st := readStatus(t, res.RunDir)
 	if st["state"] != "completed" || st["outcome"] != "PASS" || st["schema"] != StatusSchema {
 		t.Errorf("status = %v %v", st["state"], st["outcome"])
+	}
+	us, _ := st["usage"].(map[string]any)
+	if us["cached_tokens"] != float64(160) || us["prompt_tokens"] != float64(200) {
+		t.Errorf("run usage = %+v", us)
+	}
+	redAgent, _ := st["agents"].(map[string]any)["red-team"].(map[string]any)
+	redTok, _ := redAgent["tokens"].(map[string]any)
+	if redTok["cached"] != float64(80) || redTok["prompt"] != float64(100) {
+		t.Errorf("red-team tokens = %+v", redTok)
+	}
+	var sideUsage map[string]any
+	ub, _ := os.ReadFile(filepath.Join(res.RunDir, "red-team.usage.json"))
+	_ = json.Unmarshal(ub, &sideUsage)
+	if sideUsage["cached_tokens"] != float64(80) {
+		t.Errorf("red-team.usage.json = %+v", sideUsage)
 	}
 	var cur struct {
 		RunID string `json:"run_id"`
@@ -538,6 +555,12 @@ func TestMergingTheBaseCarriesTheVerdict(t *testing.T) {
 	// No model was paid for the carried run: the cost stays on the first.
 	if st["total_cost_usd"] != float64(0) || readStatus(t, first.RunDir)["total_cost_usd"] == float64(0) {
 		t.Errorf("cost = %v carried, %v first", st["total_cost_usd"], readStatus(t, first.RunDir)["total_cost_usd"])
+	}
+	if us, _ := st["usage"].(map[string]any); us["cached_tokens"] != float64(0) {
+		t.Errorf("carried run usage.cached_tokens = %v, want 0", us["cached_tokens"])
+	}
+	if redTok, _ := st["agents"].(map[string]any)["red-team"].(map[string]any)["tokens"].(map[string]any); redTok["cached"] != float64(0) {
+		t.Errorf("carried run agent tokens.cached = %v, want 0", redTok["cached"])
 	}
 	// The run it carries is left as it was.
 	if readStatus(t, first.RunDir)["head"] != firstHead {

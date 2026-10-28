@@ -29,10 +29,11 @@ type reply struct {
 
 // fakeGemini serves scripted replies and records each request's body.
 type fakeGemini struct {
-	mu       sync.Mutex
-	replies  []reply
-	requests []geminiRequest
-	keys     []string
+	mu          sync.Mutex
+	replies     []reply
+	requests    []geminiRequest
+	rawRequests []string
+	keys        []string
 }
 
 func (f *fakeGemini) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +42,7 @@ func (f *fakeGemini) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(b, &req)
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
+	f.rawRequests = append(f.rawRequests, string(b))
 	f.keys = append(f.keys, r.Header.Get("x-goog-api-key"))
 	rep := reply{status: 200, body: okBody}
 	if len(f.replies) > 0 {
@@ -260,6 +262,52 @@ func TestGeminiTimeoutNamesTheSetting(t *testing.T) {
 	_, err := g.Complete(context.Background(), Request{Prompt: "u"})
 	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "CODE_REVIEWER_GEMINI_TIMEOUT") || !IsTransient(err) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestGeminiThinkingBudgetAndBlockFallback(t *testing.T) {
+	// 1. ThinkingBudget == nil omits thinkingConfig on normal attempts.
+	f1 := &fakeGemini{}
+	g1, _ := newTestGemini(t, f1)
+	if _, err := g1.Complete(context.Background(), Request{Prompt: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if f1.requests[0].GenerationConfig.ThinkingConfig != nil || strings.Contains(f1.rawRequests[0], "thinkingConfig") {
+		t.Errorf("expected nil ThinkingBudget to omit thinkingConfig, got %s", f1.rawRequests[0])
+	}
+
+	// 2. ThinkingBudget != nil serializes thinkingConfig and blockNoThinking overrides on final retry without mutating caller's int.
+	blocked := reply{status: 200, body: blockedBody}
+	cachedOK := reply{
+		status: 200,
+		body: `{"candidates":[{"content":{"parts":[{"text":"{\"findings\": [], \"summary\": \"ok\"}"}]},"finishReason":"STOP"}],` +
+			`"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"thoughtsTokenCount":15,"cachedContentTokenCount":80}}`,
+	}
+	f2 := &fakeGemini{replies: []reply{blocked, blocked, cachedOK}}
+	g2, _ := newTestGemini(t, f2, WithGeminiBlockRetries(2, true))
+	budget := 1024
+	resp, err := g2.Complete(context.Background(), Request{Prompt: "u", ThinkingBudget: &budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if budget != 1024 {
+		t.Errorf("caller's ThinkingBudget variable was mutated to %d", budget)
+	}
+	if len(f2.requests) != 3 {
+		t.Fatalf("requests = %d, want 3", len(f2.requests))
+	}
+	for i := 0; i < 2; i++ {
+		tc := f2.requests[i].GenerationConfig.ThinkingConfig
+		if tc == nil || tc.ThinkingBudget != 1024 || !strings.Contains(f2.rawRequests[i], `"thinkingConfig":{"thinkingBudget":1024}`) {
+			t.Errorf("request %d: raw = %s", i, f2.rawRequests[i])
+		}
+	}
+	tcFinal := f2.requests[2].GenerationConfig.ThinkingConfig
+	if tcFinal == nil || tcFinal.ThinkingBudget != 0 || !strings.Contains(f2.rawRequests[2], `"thinkingConfig":{"thinkingBudget":0}`) {
+		t.Errorf("final retry did not override thinkingBudget to 0: %s", f2.rawRequests[2])
+	}
+	if resp.InputTokens != 100 || resp.OutputTokens != 20 || resp.ThoughtTokens != 15 || resp.CacheReadTokens != 80 {
+		t.Errorf("usage = %+v", resp)
 	}
 }
 

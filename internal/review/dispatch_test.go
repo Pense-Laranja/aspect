@@ -167,14 +167,23 @@ type scripted struct {
 	mu      sync.Mutex
 	script  []any
 	prompts []string
+	budgets []int
 }
 
-func (s *scripted) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+func (s *scripted) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if len(s.script) == 0 {
+		s.mu.Unlock()
+		<-ctx.Done()
+		return llm.Response{}, ctx.Err()
+	}
 	s.prompts = append(s.prompts, req.Prompt)
+	if req.ThinkingBudget != nil {
+		s.budgets = append(s.budgets, *req.ThinkingBudget)
+	}
 	next := s.script[0]
 	s.script = s.script[1:]
+	s.mu.Unlock()
 	if err, ok := next.(error); ok {
 		return llm.Response{}, err
 	}
@@ -275,7 +284,7 @@ func TestRequestsInFlightAreCapped(t *testing.T) {
 		var wg sync.WaitGroup
 		for i := 0; i < 6; i++ {
 			wg.Add(1)
-			go func() { defer wg.Done(); rv.ask(context.Background(), "p", nil) }()
+			go func() { defer wg.Done(); rv.ask(context.Background(), "p", nil, nil) }()
 		}
 		waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return inFlight == tc.want })
 		close(gate)
@@ -292,20 +301,107 @@ func (f clientFunc) Complete(ctx context.Context, req llm.Request) (llm.Response
 	return f(ctx, req)
 }
 
+func TestThinkingBudgetForPart(t *testing.T) {
+	// estimateTokens counts (len+2)/3 runes.
+	cases := []struct {
+		tokens int
+		want   int
+	}{
+		{0, 1024},
+		{500, 1024},
+		{1000, 1024},
+		{1001, 2048},
+		{2500, 2048},
+		{4000, 2048},
+		{4001, 4096},
+		{8000, 4096},
+	}
+	for _, tc := range cases {
+		p := diffPart{text: strings.Repeat("a", tc.tokens*3)}
+		if got := thinkingBudgetForPart(p); got != tc.want {
+			t.Errorf("thinkingBudgetForPart(%d tokens) = %d, want %d", tc.tokens, got, tc.want)
+		}
+	}
+}
+
+func TestParallelPartsCompleteOutOfOrderStillMergeInOrder(t *testing.T) {
+	part2Done := make(chan struct{})
+	client := clientFunc(func(ctx context.Context, req llm.Request) (llm.Response, error) {
+		if strings.Contains(req.Prompt, "part 1 of ") {
+			select {
+			case <-part2Done:
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err()
+			}
+			return llm.Response{
+				Text:            `{"summary": "first part summary", "findings": [{"id": "ar/1", "severity": "high", "title": "f1"}]}`,
+				Model:           "flash",
+				InputTokens:     1000,
+				CacheReadTokens: 400,
+				OutputTokens:    100,
+			}, nil
+		}
+		if strings.Contains(req.Prompt, "part 2 of ") {
+			defer close(part2Done)
+			return llm.Response{
+				Text:            `{"summary": "second part summary", "findings": [{"id": "ar/1", "severity": "medium", "title": "f2"}]}`,
+				Model:           "flash",
+				InputTokens:     2000,
+				CacheReadTokens: 800,
+				OutputTokens:    200,
+			}, nil
+		}
+		return llm.Response{
+			Text:            `{"summary": "later part summary", "findings": []}`,
+			Model:           "flash",
+			InputTokens:     500,
+			CacheReadTokens: 100,
+			OutputTokens:    50,
+		}, nil
+	})
+	raw, u, _, err := runOne(t, client, 6000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := asText(raw.Get("summary"))
+	i1 := strings.Index(summary, "[part 1] first part summary")
+	i2 := strings.Index(summary, "[part 2] second part summary")
+	if i1 < 0 || i2 < 0 || i1 >= i2 {
+		t.Errorf("summaries merged out of order: %q", summary)
+	}
+	findings := raw.Get("findings").([]any)
+	if len(findings) != 2 {
+		t.Fatalf("findings = %d, want 2", len(findings))
+	}
+	id1 := asText(findings[0].(*Object).Get("id"))
+	id2 := asText(findings[1].(*Object).Get("id"))
+	if id1 != "ar/1-p1" || id2 != "ar/1-p2" {
+		t.Errorf("finding ids = %q, %q; want ar/1-p1, ar/1-p2", id1, id2)
+	}
+	if u.CachedTokens < 1200 {
+		t.Errorf("cached tokens = %d, want >= 1200", u.CachedTokens)
+	}
+}
+
 func TestGeminiCost(t *testing.T) {
 	cases := []struct {
-		model              string
-		prompt, completion int64
-		want               float64
+		name                       string
+		model                      string
+		prompt, cached, completion int64
+		want                       float64
 	}{
-		{"gemini-flash-latest", 1_000_000, 1_000_000, 0.75}, // over 128k: the higher tier
-		{"gemini-2.5-pro", 1_000_000, 1_000_000, 12.5},
-		{"gemini-2.5-pro", 100_000, 10_000, 0.175},
-		{"gemini-flash-latest", 100_000, 10_000, 0.0105},
+		{"flash >128k uncached", "gemini-flash-latest", 1_000_000, 0, 1_000_000, 0.75},
+		{"pro >128k uncached", "gemini-2.5-pro", 1_000_000, 0, 1_000_000, 12.5},
+		{"pro <=128k uncached", "gemini-2.5-pro", 100_000, 0, 10_000, 0.175},
+		{"flash <=128k uncached", "gemini-flash-latest", 100_000, 0, 10_000, 0.0105},
+		{"flash <=128k 100% cached (75% discount on input)", "gemini-flash-latest", 100_000, 100_000, 0, 0.001875},
+		{"pro <=128k partial cached", "gemini-2.5-pro", 100_000, 80_000, 10_000, 0.1},
+		{"negative cached clamped to 0", "gemini-flash-latest", 100_000, -50_000, 10_000, 0.0105},
+		{"cached > prompt clamped to prompt", "gemini-flash-latest", 100_000, 200_000, 0, 0.001875},
 	}
 	for _, c := range cases {
-		if got := geminiCost(c.model, c.prompt, c.completion); got != c.want {
-			t.Errorf("geminiCost(%s, %d, %d) = %v, want %v", c.model, c.prompt, c.completion, got, c.want)
+		if got := geminiCost(c.model, c.prompt, c.cached, c.completion); got != c.want {
+			t.Errorf("%s: geminiCost(%s, %d, %d, %d) = %v, want %v", c.name, c.model, c.prompt, c.cached, c.completion, got, c.want)
 		}
 	}
 }

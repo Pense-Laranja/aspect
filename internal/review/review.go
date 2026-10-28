@@ -515,6 +515,7 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 		side.Set("engine", u.Engine)
 		side.Set("cost_usd", roundTo(u.CostUSD, 6))
 		side.Set("prompt_tokens", u.PromptTokens)
+		side.Set("cached_tokens", u.CachedTokens)
 		side.Set("completion_tokens", u.CompletionTokens)
 		side.Set("total_tokens", u.TotalTokens)
 		_ = writeJSON(filepath.Join(dir, a.Agent+".usage.json"), side)

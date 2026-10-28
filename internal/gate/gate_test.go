@@ -70,17 +70,59 @@ func TestMatch(t *testing.T) {
 	}
 }
 
+func TestMatchAnyNegation(t *testing.T) {
+	cases := []struct {
+		name     string
+		patterns []string
+		path     string
+		want     bool
+	}{
+		{"positive then negative matches non-test", []string{"**/*.go", "!**/*_test.go"}, "internal/gate/plan.go", true},
+		{"positive then negative excludes nested test", []string{"**/*.go", "!**/*_test.go"}, "internal/gate/gate_test.go", false},
+		{"positive then negative excludes root test", []string{"**/*.go", "!**/*_test.go"}, "main_test.go", false},
+		{"negative before positive still excludes test", []string{"!**/*_test.go", "**/*.go"}, "internal/gate/gate_test.go", false},
+		{"negative before positive still matches non-test", []string{"!**/*_test.go", "**/*.go"}, "internal/gate/plan.go", true},
+		{"unmatched extension with negation is false", []string{"**/*.go", "!**/*_test.go", "**/*.swift"}, "go.mod", false},
+		{"swift matches with go test exclusion", []string{"**/*.go", "!**/*_test.go", "**/*.swift"}, "App/Main.swift", true},
+	}
+	for _, tc := range cases {
+		if got := matchAny(tc.patterns, tc.path); got != tc.want {
+			t.Errorf("%s: matchAny(%v, %q) = %v, want %v", tc.name, tc.patterns, tc.path, got, tc.want)
+		}
+	}
+
+	c := mustParse(t, `
+gates:
+  - agent: arch
+    paths: ["internal/**"]
+    mode: advisory
+    when:
+      min_changed_lines: 200
+      or_touches: ["internal/**/*.go", "!internal/**/*_test.go"]
+`)
+	if p := BuildPlan(c, "b", "h", []Change{{Path: "internal/gate/gate_test.go", Added: 5}}, "", NoSpec); len(p.Agents) != 0 {
+		t.Errorf("when.or_touches with negation matched test file: %+v", p.Agents)
+	}
+	if p := BuildPlan(c, "b", "h", []Change{{Path: "internal/gate/plan.go", Added: 5}}, "", NoSpec); len(p.Agents) != 1 {
+		t.Errorf("when.or_touches with negation did not match production file: %+v", p.Agents)
+	}
+}
+
 func TestParseConfigRejects(t *testing.T) {
 	cases := map[string]string{
-		"unknown key":      "gates: [{agent: a, paths: ['**'], mode: gate, extra: 1}]",
-		"no gates":         "spec: x.yaml",
-		"bad mode":         "gates: [{agent: a, paths: ['**'], mode: author}]",
-		"duplicate agent":  "gates: [{agent: a, paths: ['**'], mode: gate}, {agent: a, paths: ['x'], mode: gate}]",
-		"no paths":         "gates: [{agent: a, mode: gate}]",
-		"bad pattern":      "gates: [{agent: a, paths: ['[x'], mode: gate}]",
-		"unknown severity": "gates: [{agent: a, paths: ['**'], mode: gate}]\nthresholds: {block: [severe]}",
-		"block and warn":   "gates: [{agent: a, paths: ['**'], mode: gate}]\nthresholds: {block: [high], warn: [high]}",
-		"confidence range": "gates: [{agent: a, paths: ['**'], mode: gate}]\nthresholds: {block: [high], min_confidence_to_block: 2}",
+		"unknown key":                "gates: [{agent: a, paths: ['**'], mode: gate, extra: 1}]",
+		"no gates":                   "spec: x.yaml",
+		"bad mode":                   "gates: [{agent: a, paths: ['**'], mode: author}]",
+		"duplicate agent":            "gates: [{agent: a, paths: ['**'], mode: gate}, {agent: a, paths: ['x'], mode: gate}]",
+		"no paths":                   "gates: [{agent: a, mode: gate}]",
+		"bad pattern":                "gates: [{agent: a, paths: ['[x'], mode: gate}]",
+		"bare bang pattern":          "gates: [{agent: a, paths: ['**', '!'], mode: gate}]",
+		"malformed negated glob":     "gates: [{agent: a, paths: ['**', '![x'], mode: gate}]",
+		"negative-only paths":        "gates: [{agent: a, paths: ['!**/*_test.go'], mode: gate}]",
+		"negative-only when.touches": "gates: [{agent: a, paths: ['**'], mode: gate, when: {or_touches: ['!**/*_test.go']}}]",
+		"unknown severity":           "gates: [{agent: a, paths: ['**'], mode: gate}]\nthresholds: {block: [severe]}",
+		"block and warn":             "gates: [{agent: a, paths: ['**'], mode: gate}]\nthresholds: {block: [high], warn: [high]}",
+		"confidence range":           "gates: [{agent: a, paths: ['**'], mode: gate}]\nthresholds: {block: [high], min_confidence_to_block: 2}",
 	}
 	for name, y := range cases {
 		if _, err := ParseConfig([]byte(y)); err == nil {
@@ -113,6 +155,85 @@ func TestRepositoryGatesYAML(t *testing.T) {
 		if _, err := os.Stat(filepath.Join("..", "..", ".claude", "agents", g.Agent+".md")); err != nil {
 			t.Errorf("gates.yaml names %s, which has no agent file: %v", g.Agent, err)
 		}
+	}
+}
+
+func TestRepositoryGatesConfig(t *testing.T) {
+	c, err := LoadConfig(filepath.Join("..", "..", DefaultConfigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. A *_test.go-only change schedules only spec-keeper, consistency-reviewer, and test-adequacy-reviewer.
+	onlyTest := []Change{{Path: "internal/gate/gate_test.go", Added: 50}}
+	pTestOnly := BuildPlan(c, "b", "h", onlyTest, "", NoSpec)
+	wantTestOnly := []string{"spec-keeper", "consistency-reviewer", "test-adequacy-reviewer"}
+	if got := agents(pTestOnly); !slices.Equal(got, wantTestOnly) {
+		t.Errorf("test-only change scheduled %v, want %v", got, wantTestOnly)
+	}
+
+	// 2. A *_test.go + go.mod + go.sum change: quality-reviewer and security-reviewer receive ["go.mod", "go.sum"] only,
+	// test-adequacy-reviewer receives ["internal/gate/gate_test.go"], and adversarial-reviewer is not scheduled.
+	onlyTestsAndMod := []Change{
+		{Path: "internal/gate/gate_test.go", Added: 10},
+		{Path: "go.mod", Added: 1},
+		{Path: "go.sum", Added: 2},
+	}
+	p1 := BuildPlan(c, "b", "h", onlyTestsAndMod, "", NoSpec)
+	if _, ok := p1.Agent("adversarial-reviewer"); ok {
+		t.Error("expected adversarial-reviewer not to be scheduled when only *_test.go, go.mod, and go.sum change")
+	}
+	for _, name := range []string{"quality-reviewer", "security-reviewer"} {
+		a, ok := p1.Agent(name)
+		if !ok {
+			t.Fatalf("expected %s to be scheduled on go.mod/go.sum change", name)
+		}
+		if want := []string{"go.mod", "go.sum"}; !slices.Equal(a.Files, want) {
+			t.Errorf("%s files = %v, want %v", name, a.Files, want)
+		}
+	}
+	if ta, ok := p1.Agent("test-adequacy-reviewer"); !ok || !slices.Equal(ta.Files, []string{"internal/gate/gate_test.go"}) {
+		t.Errorf("test-adequacy-reviewer = %+v, want files [internal/gate/gate_test.go]", ta)
+	}
+
+	// 3. A mixed production + test change: production-scoped reviewers receive only ["internal/gate/plan.go"],
+	// test-adequacy-reviewer/spec-keeper/consistency-reviewer receive both files, and architect is not triggered
+	// because gate_test.go's 250 lines are excluded from architect's 200-line threshold.
+	prodAndTest := []Change{
+		{Path: "internal/gate/plan.go", Added: 10},
+		{Path: "internal/gate/gate_test.go", Added: 250},
+	}
+	p2 := BuildPlan(c, "b", "h", prodAndTest, "", NoSpec)
+	for _, name := range []string{
+		"adversarial-reviewer",
+		"security-reviewer",
+		"quality-reviewer",
+		"readability-reviewer",
+		"design-reviewer",
+		"performance-reviewer",
+		"observability-reviewer",
+		"i18n-reviewer",
+		"api-contract-reviewer",
+	} {
+		a, ok := p2.Agent(name)
+		if !ok {
+			t.Fatalf("expected %s to be scheduled when internal/gate/plan.go changes", name)
+		}
+		if want := []string{"internal/gate/plan.go"}; !slices.Equal(a.Files, want) {
+			t.Errorf("%s files = %v, want %v", name, a.Files, want)
+		}
+	}
+	for _, name := range []string{"spec-keeper", "consistency-reviewer", "test-adequacy-reviewer"} {
+		a, ok := p2.Agent(name)
+		if !ok {
+			t.Fatalf("expected %s to be scheduled", name)
+		}
+		if want := []string{"internal/gate/plan.go", "internal/gate/gate_test.go"}; !slices.Equal(a.Files, want) {
+			t.Errorf("%s files = %v, want %v", name, a.Files, want)
+		}
+	}
+	if _, ok := p2.Agent("architect"); ok {
+		t.Error("expected architect not to be scheduled when only 10 lines of production code and 250 lines of test code change")
 	}
 }
 

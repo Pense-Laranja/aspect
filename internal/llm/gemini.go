@@ -193,6 +193,9 @@ func (g *Gemini) Complete(ctx context.Context, req Request) (Response, error) {
 	if req.JSON || req.Schema != nil {
 		body.GenerationConfig.ResponseMIMEType = "application/json"
 	}
+	if req.ThinkingBudget != nil {
+		body.GenerationConfig.ThinkingConfig = &geminiThinking{ThinkingBudget: *req.ThinkingBudget}
+	}
 	url := fmt.Sprintf("%s/models/%s:generateContent", g.base, g.model)
 
 	attempt, blocked, calls := 0, 0, 0
