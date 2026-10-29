@@ -113,6 +113,7 @@ type Result struct {
 	Outcome   string
 	Rendered  string // the Markdown result
 	Published string // what publish.sh said, when it ran
+	Usage     Usage
 }
 
 func (e *Engine) now() time.Time {
@@ -196,6 +197,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	res := &Result{RunID: runID, RunDir: dir, PR: pr.Number, PRURL: pr.URL, Plan: plan, CarryError: carryErr}
 	if len(plan.Agents) == 0 {
 		res.Outcome, res.Rendered = st.finish(OutcomePass, ""), noAgents
+		res.Usage = st.usage
 		return res, nil
 	}
 
@@ -225,7 +227,18 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		return nil, err
 	}
 
-	check, rendered := e.check(cfg, plan, dir)
+	_, _, _, _, u := st.counts()
+	duration := e.now().Sub(st.startedAt)
+	usageSummary := &gate.UsageSummary{
+		CostUSD:          u.CostUSD,
+		PromptTokens:     u.PromptTokens,
+		CachedTokens:     u.CachedTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+		Duration:         duration,
+	}
+
+	check, rendered := e.check(cfg, plan, dir, usageSummary)
 	published := ""
 	if opt.Publish {
 		published = e.publish(ctx, repo, dir, pr.Number)
@@ -235,6 +248,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		outcome = OutcomeError // no verdict is not a pass
 	}
 	res.Outcome = st.finish(outcome, published)
+	res.Usage = st.usage
 	res.Rendered, res.Published = rendered, published
 	return res, nil
 }
@@ -564,7 +578,7 @@ func promptBody(md string) string {
 
 // check validates the run's reports against its plan and renders the
 // result.
-func (e *Engine) check(cfg *gate.Config, plan *gate.Plan, dir string) (*gate.Result, string) {
+func (e *Engine) check(cfg *gate.Config, plan *gate.Plan, dir string, usage *gate.UsageSummary) (*gate.Result, string) {
 	inputs := map[string]gate.Input{}
 	for _, a := range plan.Agents {
 		b, err := os.ReadFile(filepath.Join(dir, a.Agent+".json"))
@@ -574,7 +588,27 @@ func (e *Engine) check(cfg *gate.Config, plan *gate.Plan, dir string) (*gate.Res
 		inputs[a.Agent] = gate.Input{Data: b, Err: err}
 	}
 	res := gate.Check(cfg, plan, inputs, false)
-	return res, gate.Render(cfg, plan, res, gate.RenderOptions{})
+	return res, gate.Render(cfg, plan, res, gate.RenderOptions{Usage: usage})
+}
+
+// FormatOutcomeLine formats the outcome banner with token and cost breakdown.
+func FormatOutcomeLine(outcome string, u Usage, reused bool) string {
+	if reused {
+		return fmt.Sprintf("Aspect gate outcome: %s — Cost: $0.0000 (reused)", outcome)
+	}
+	if u.TotalTokens == 0 && u.CostUSD == 0 {
+		return fmt.Sprintf("Aspect gate outcome: %s", outcome)
+	}
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%s prompt", gate.FormatTokens(u.PromptTokens)))
+	parts = append(parts, fmt.Sprintf("%s completion", gate.FormatTokens(u.CompletionTokens)))
+	if u.CachedTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s cached [75%% discount]", gate.FormatTokens(u.CachedTokens)))
+	}
+	if u.Duration > 0 {
+		parts = append(parts, gate.FormatDuration(u.Duration))
+	}
+	return fmt.Sprintf("Aspect gate outcome: %s — Cost: %s (%s)", outcome, gate.FormatCost(u.CostUSD), strings.Join(parts, ", "))
 }
 
 // publish runs .claude/review/publish.sh on the run, when the repository

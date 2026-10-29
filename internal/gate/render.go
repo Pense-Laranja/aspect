@@ -2,14 +2,28 @@ package gate
 
 import (
 	"fmt"
+	"math"
 	"path"
 	"slices"
 	"strings"
+	"time"
 )
 
 // CommentMarker starts every rendered comment so CI can find and update its
 // own sticky comment instead of adding a new one per push.
 const CommentMarker = "<!-- aspect-review-gates -->"
+
+// UsageSummary summarizes cost and token usage for the review session.
+type UsageSummary struct {
+	CostUSD          float64
+	PromptTokens     int64
+	CachedTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	Duration         time.Duration
+	CarriedFrom      string
+	Reused           bool
+}
 
 // RenderOptions controls what a rendered comment may disclose.
 type RenderOptions struct {
@@ -17,6 +31,7 @@ type RenderOptions struct {
 	// severities to title, category and file, so a public PR does not
 	// publish an exploit before it is fixed.
 	Public bool
+	Usage  *UsageSummary
 }
 
 // Render writes the check result as Markdown for a PR comment or a terminal.
@@ -40,6 +55,7 @@ func Render(c *Config, p *Plan, r *Result, opt RenderOptions) string {
 	}
 	if len(r.Agents) == 0 {
 		b.WriteString("No gate applies to this change.\n")
+		renderUsageFooter(&b, opt.Usage)
 		return b.String()
 	}
 	b.WriteString("| Agent | Mode | Report | Blocking | Warnings |\n|---|---|---|---|---|\n")
@@ -84,7 +100,68 @@ func Render(c *Config, p *Plan, r *Result, opt RenderOptions) string {
 	if hasSpecDrift(r) && strings.HasPrefix(path.Clean(p.Spec), SpecUpdateDir) {
 		fmt.Fprintf(&b, "\nThe spec and the code disagree. Adding the `%s` label runs spec-keeper in author mode and proposes its spec edits as a PR into this branch.\n", UpdateSpecLabel)
 	}
+	renderUsageFooter(&b, opt.Usage)
 	return b.String()
+}
+
+func renderUsageFooter(b *strings.Builder, u *UsageSummary) {
+	if u == nil || (u.TotalTokens <= 0 && u.CostUSD <= 0 && u.CarriedFrom == "" && !u.Reused) {
+		return
+	}
+	b.WriteString("\n---\n")
+	if u.Reused || u.CarriedFrom != "" {
+		b.WriteString("Cost: $0.0000 (reused)\n")
+		return
+	}
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%s prompt", FormatTokens(u.PromptTokens)))
+	parts = append(parts, fmt.Sprintf("%s completion", FormatTokens(u.CompletionTokens)))
+	if u.CachedTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s cached [75%% discount]", FormatTokens(u.CachedTokens)))
+	}
+	if u.Duration > 0 {
+		parts = append(parts, FormatDuration(u.Duration))
+	}
+	fmt.Fprintf(b, "Cost: %s (%s)\n", FormatCost(u.CostUSD), strings.Join(parts, ", "))
+}
+
+// FormatTokens formats token counts for human readability.
+func FormatTokens(tokens int64) string {
+	if tokens <= 0 {
+		return "0"
+	}
+	switch {
+	case tokens < 1000:
+		return fmt.Sprintf("%d", tokens)
+	case tokens < 10_000:
+		s := fmt.Sprintf("%.1fk", float64(tokens)/1000.0)
+		return strings.Replace(s, ".0k", "k", 1)
+	case tokens < 1_000_000:
+		k := int64(math.Round(float64(tokens) / 1000.0))
+		return fmt.Sprintf("%dk", k)
+	default:
+		s := fmt.Sprintf("%.1fM", float64(tokens)/1_000_000.0)
+		return strings.Replace(s, ".0M", "M", 1)
+	}
+}
+
+// FormatCost formats a USD cost to 4 decimal places with a leading dollar sign.
+func FormatCost(costUSD float64) string {
+	if costUSD < 0 {
+		costUSD = 0.0
+	}
+	return fmt.Sprintf("$%.4f", costUSD)
+}
+
+// FormatDuration formats a duration for display in review reports.
+func FormatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "~0s"
+	}
+	if d < time.Second {
+		return "<1s"
+	}
+	return "~" + d.Round(time.Second).String()
 }
 
 // UpdateSpecLabel is the PR label that runs spec-keeper in author mode on

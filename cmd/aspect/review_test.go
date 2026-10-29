@@ -3,6 +3,8 @@ package main
 import (
 	"slices"
 	"testing"
+
+	"github.com/eideroliveira/aspect/internal/review"
 )
 
 func TestParseReadArgs(t *testing.T) {
@@ -42,5 +44,34 @@ func TestParseReadArgs(t *testing.T) {
 	}
 	if a, _ := parseReadArgs("runs", []string{"-limit", "3"}, "."); a.limit != 3 {
 		t.Errorf("limit = %d", a.limit)
+	}
+}
+
+func TestOutcomeLineBannerIntegration(t *testing.T) {
+	cases := []struct {
+		outcome string
+		usage   review.Usage
+		reused  bool
+		want    string
+	}{
+		{
+			outcome: "PASS",
+			usage:   review.Usage{CostUSD: 0.0595, PromptTokens: 4500, CompletionTokens: 1200, CachedTokens: 2100, TotalTokens: 7800},
+			reused:  false,
+			want:    "Aspect gate outcome: PASS — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached [75% discount])",
+		},
+		{
+			outcome: "PASS",
+			usage:   review.Usage{CostUSD: 0.0595, PromptTokens: 4500, CompletionTokens: 1200, CachedTokens: 2100, TotalTokens: 7800},
+			reused:  true,
+			want:    "Aspect gate outcome: PASS — Cost: $0.0000 (reused)",
+		},
+	}
+
+	for _, tc := range cases {
+		got := review.FormatOutcomeLine(tc.outcome, tc.usage, tc.reused)
+		if got != tc.want {
+			t.Errorf("FormatOutcomeLine() = %q, want %q", got, tc.want)
+		}
 	}
 }

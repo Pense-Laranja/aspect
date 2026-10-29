@@ -35,9 +35,25 @@ type RunSummary struct {
 	CompletedAgents int                     `json:"completed_agents"`
 	TotalAgents     int                     `json:"total_agents"`
 	TotalCostUSD    float64                 `json:"total_cost_usd"`
+	TotalTokens     int64                   `json:"total_tokens"`
+	Usage           Usage                   `json:"usage"`
 	Published       string                  `json:"published_status"`
 	Agents          map[string]AgentSummary `json:"agents"`
 	Findings        []FindingSummary        `json:"findings"`
+}
+
+func (r *RunSummary) cost() float64 {
+	if r.Usage.CostUSD > 0 {
+		return r.Usage.CostUSD
+	}
+	return r.TotalCostUSD
+}
+
+func (r *RunSummary) tokens() int64 {
+	if r.Usage.TotalTokens > 0 {
+		return r.Usage.TotalTokens
+	}
+	return r.TotalTokens
 }
 
 // AgentSummary is one agent of a run.
@@ -179,8 +195,27 @@ func PrintStatus(w io.Writer, r *RunSummary) {
 	if r.PR != "" {
 		fmt.Fprintf(w, ", PR #%s", r.PR)
 	}
-	if r.TotalCostUSD > 0 {
-		fmt.Fprintf(w, ", $%.4f", r.TotalCostUSD)
+	cost := r.cost()
+	tokens := r.tokens()
+	if cost > 0 {
+		fmt.Fprintf(w, ", %s", gate.FormatCost(cost))
+	}
+	if tokens > 0 {
+		var parts []string
+		if r.Usage.PromptTokens > 0 {
+			parts = append(parts, fmt.Sprintf("%s prompt", gate.FormatTokens(r.Usage.PromptTokens)))
+		}
+		if r.Usage.CompletionTokens > 0 {
+			parts = append(parts, fmt.Sprintf("%s completion", gate.FormatTokens(r.Usage.CompletionTokens)))
+		}
+		if r.Usage.CachedTokens > 0 {
+			parts = append(parts, fmt.Sprintf("%s cached", gate.FormatTokens(r.Usage.CachedTokens)))
+		}
+		if len(parts) > 0 {
+			fmt.Fprintf(w, " (%s)", strings.Join(parts, ", "))
+		} else {
+			fmt.Fprintf(w, " (%s tokens)", gate.FormatTokens(tokens))
+		}
 	}
 	fmt.Fprintf(w, "\n%s\n\n", r.Summary)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -272,13 +307,23 @@ func PrintCompare(w io.Writer, a, b *RunSummary) {
 // PrintRuns lists runs, one line each.
 func PrintRuns(w io.Writer, runs []*RunSummary) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tPR\tSTATE\tOUTCOME\tBLOCKING\tFINDINGS\tENGINE")
+	fmt.Fprintln(tw, "RUN\tPR\tSTATE\tOUTCOME\tBLOCKING\tFINDINGS\tCOST\tTOKENS\tENGINE")
 	for _, r := range runs {
 		pr := "-"
 		if r.PR != "" {
 			pr = "#" + r.PR
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\n", r.RunID, pr, r.State, firstNonEmpty(r.Outcome, "-"), r.TotalBlockers, r.TotalFindings, r.Engine)
+		cost := "-"
+		if c := r.cost(); c > 0 {
+			cost = gate.FormatCost(c)
+		}
+		tokens := "-"
+		if t := r.tokens(); t > 0 {
+			tokens = gate.FormatTokens(t)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n",
+			r.RunID, pr, r.State, firstNonEmpty(r.Outcome, "-"),
+			r.TotalBlockers, r.TotalFindings, cost, tokens, r.Engine)
 	}
 	tw.Flush()
 }

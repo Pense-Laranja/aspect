@@ -414,8 +414,13 @@ func TestUnchangedDiffReturnsThePreviousResults(t *testing.T) {
 	if !second.Cached || second.RunID != first.RunID || second.Outcome != OutcomePass || broken.model.callCount() != 0 {
 		t.Fatalf("second = %+v, calls = %d", second, broken.model.callCount())
 	}
-	if second.Rendered != first.Rendered {
+	firstBody, _, _ := strings.Cut(first.Rendered, "\n---\nCost:")
+	secondBody, _, _ := strings.Cut(second.Rendered, "\n---\nCost:")
+	if secondBody != firstBody {
 		t.Error("the reused result renders differently")
+	}
+	if !strings.Contains(second.Rendered, "Cost: $0.0000 (reused)") {
+		t.Errorf("second.Rendered lacks reused cost footer:\n%s", second.Rendered)
 	}
 }
 

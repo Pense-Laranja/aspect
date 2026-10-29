@@ -320,7 +320,14 @@ func (e *Engine) reuse(ctx context.Context, repo, dir string, cfg *gate.Config, 
 			runPlan = &p
 		}
 	}
-	check, rendered := e.check(cfg, runPlan, dir)
+	carriedFrom := ""
+	if runPlan.CarriedFrom != nil {
+		carriedFrom = runPlan.CarriedFrom.Run
+	}
+	check, rendered := e.check(cfg, runPlan, dir, &gate.UsageSummary{
+		Reused:      true,
+		CarriedFrom: carriedFrom,
+	})
 	for _, name := range []string{"comment.md", "rendered.md"} {
 		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil && len(b) > 0 {
 			rendered = string(b)
@@ -335,14 +342,21 @@ func (e *Engine) reuse(ctx context.Context, repo, dir string, cfg *gate.Config, 
 		outcome = OutcomePass
 	}
 	writeCurrentRun(filepath.Join(repo, ".review"), runID, stateCompleted, e.now())
-	carriedFrom := ""
-	if runPlan.CarriedFrom != nil {
-		carriedFrom = runPlan.CarriedFrom.Run
+	var runUsage Usage
+	if summary, err := loadRunDir(dir); err == nil {
+		runUsage = summary.Usage
+		if runUsage.CostUSD == 0 && summary.TotalCostUSD > 0 {
+			runUsage.CostUSD = summary.TotalCostUSD
+		}
+		if runUsage.TotalTokens == 0 && summary.TotalTokens > 0 {
+			runUsage.TotalTokens = summary.TotalTokens
+		}
 	}
 	return &Result{
 		RunID: runID, RunDir: dir, Cached: true, CarriedFrom: carriedFrom,
 		PR: firstNonEmpty(pr.Number, asText(status.Get("pr"))), PRURL: firstNonEmpty(pr.URL, asText(status.Get("pr_url"))),
 		Plan: runPlan, Outcome: outcome, Rendered: rendered, Published: published,
+		Usage: runUsage,
 	}, nil
 }
 

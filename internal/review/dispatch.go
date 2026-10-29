@@ -2,9 +2,11 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/eideroliveira/aspect/internal/llm"
 )
@@ -100,17 +102,36 @@ func thinkingBudgetForPart(p diffPart) int {
 	}
 }
 
-// usage is what one review cost.
-type usage struct {
-	Engine           string
-	CostUSD          float64
-	PromptTokens     int64
-	CachedTokens     int64
-	CompletionTokens int64
-	TotalTokens      int64
+// Usage is what one review cost.
+type Usage struct {
+	Engine           string        `json:"engine,omitempty"`
+	CostUSD          float64       `json:"cost_usd,omitempty"`
+	PromptTokens     int64         `json:"prompt_tokens,omitempty"`
+	CachedTokens     int64         `json:"cached_tokens,omitempty"`
+	CompletionTokens int64         `json:"completion_tokens,omitempty"`
+	TotalTokens      int64         `json:"total_tokens,omitempty"`
+	Duration         time.Duration `json:"duration,omitempty"`
 }
 
-func (u *usage) add(o usage) {
+type usage = Usage
+
+func (u *Usage) UnmarshalJSON(b []byte) error {
+	type alias Usage
+	var aux struct {
+		alias
+		TotalCostUSD float64 `json:"total_cost_usd"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*u = Usage(aux.alias)
+	if u.CostUSD == 0 && aux.TotalCostUSD != 0 {
+		u.CostUSD = aux.TotalCostUSD
+	}
+	return nil
+}
+
+func (u *Usage) Add(o Usage) {
 	if o.Engine != "" && !strings.Contains(u.Engine, o.Engine) {
 		if u.Engine != "" {
 			u.Engine += " + "
@@ -122,6 +143,10 @@ func (u *usage) add(o usage) {
 	u.CachedTokens += o.CachedTokens
 	u.CompletionTokens += o.CompletionTokens
 	u.TotalTokens += o.TotalTokens
+}
+
+func (u *Usage) add(o Usage) {
+	u.Add(o)
 }
 
 // mergeParts makes one report from per-part reports: lists joined, the

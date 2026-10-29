@@ -75,24 +75,26 @@ type agentStatus struct {
 // runStatus is a run's progress, kept in .review/<run-id>/status.json and
 // rewritten at every change so a dashboard can follow it.
 type runStatus struct {
-	mu        sync.Mutex
-	dir       string // .review/<run-id>
-	runID     string
-	baseRef   string
-	headRef   string
-	baseSHA   string
-	headSHA   string
-	branch    string
-	diffHash  string
-	pr, prURL string
-	state     string
-	outcome   string
-	errMsg    string
-	published string
-	agents    map[string]*agentStatus
-	order     []string
-	startedAt time.Time
-	now       func() time.Time
+	mu         sync.Mutex
+	dir        string // .review/<run-id>
+	runID      string
+	baseRef    string
+	headRef    string
+	baseSHA    string
+	headSHA    string
+	branch     string
+	diffHash   string
+	pr, prURL  string
+	state      string
+	outcome    string
+	errMsg     string
+	published  string
+	agents     map[string]*agentStatus
+	order      []string
+	startedAt  time.Time
+	finishedAt time.Time
+	usage      Usage
+	now        func() time.Time
 }
 
 // computeOutcome is the outcome the agents' states support, failing closed:
@@ -260,7 +262,12 @@ func (r *runStatus) failed(name, msg string) {
 func (r *runStatus) finish(outcome, published string) string {
 	r.update(func() {
 		r.state = stateCompleted
-		completed, _, _, _, _ := r.counts()
+		r.finishedAt = r.now()
+		completed, _, _, _, u := r.counts()
+		if !r.startedAt.IsZero() && !r.finishedAt.IsZero() {
+			u.Duration = r.finishedAt.Sub(r.startedAt)
+		}
+		r.usage = u
 		if (len(r.agents) > 0 && completed == 0) || r.gatesMissing() {
 			r.outcome = worstOutcome(OutcomeError, outcome, r.computeOutcome())
 		} else {
@@ -444,7 +451,7 @@ func (r *runStatus) document() *Object {
 		all = []any{}
 	}
 	d.Set("findings", all)
-	if u.CostUSD > 0 || strings.Contains(strings.ToLower(r.engine()), "gemini") {
+	if u.CostUSD > 0 || u.TotalTokens > 0 || strings.Contains(strings.ToLower(r.engine()), "gemini") {
 		cost := roundTo(u.CostUSD, 6)
 		d.Set("total_cost_usd", cost)
 		d.Set("total_tokens", u.TotalTokens)
