@@ -138,12 +138,22 @@ Review flags:
   variables tune it (see internal/review/config.go). ASPECT_HOME supplies the agents
   and gates.yaml a repository lacks.
 
+MCP server (aspect mcp):
+  Serves the review engine on stdin/stdout for an MCP client (the Claude desktop app, Claude
+  Code, Antigravity): review_with_aspect_gates, run_single_aspect_agent, get_review_status,
+  get_review_findings, compare_review_runs, list_review_runs, check_review_engine_status.
+  Configured by the same environment as aspect review. It replaced the Python CodeReviewer's
+  server, with the same tool names and arguments.
+
 Credentials come from ANTHROPIC_API_KEY or an "ant auth login" profile.
 `
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "review" {
 		exit(runReview(os.Args[2:]))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "mcp" {
+		exit(runMCP(os.Args[2:]))
 	}
 	if len(os.Args) < 3 {
 		fmt.Fprint(os.Stderr, usage)

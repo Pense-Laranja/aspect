@@ -93,6 +93,14 @@ type Options struct {
 	PR      string // pull request number, when known
 	Publish bool   // run .claude/review/publish.sh on the result
 	Force   bool   // review again even if a run of the same diff exists
+	// Agent, when set, runs that one planned agent alone, in a run of its
+	// own (.review/agent-<UTC timestamp>) that is never reused, never
+	// published and never the current run: a single reviewer's verdict must
+	// not read as the gates'.
+	Agent string
+	// Started, when set, is called with the run id once the run's directory
+	// exists; a reused run returns at once and does not call it.
+	Started func(runID string)
 }
 
 // Result is a review's outcome.
@@ -157,7 +165,22 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	inputsHash := e.inputsHash(repo, plan, specOf)
 
 	carryErr := ""
-	if !opt.Force {
+	prefix := runDirPrefix
+	if opt.Agent != "" {
+		var only []gate.Planned
+		var planned []string
+		for _, a := range plan.Agents {
+			planned = append(planned, a.Agent)
+			if a.Agent == opt.Agent {
+				only = append(only, a)
+			}
+		}
+		if len(only) == 0 {
+			return nil, fmt.Errorf("agent %q is not in this change's gate plan (planned: %s)", opt.Agent, strings.Join(planned, ", "))
+		}
+		plan.Agents, prefix = only, agentRunPrefix
+	}
+	if !opt.Force && opt.Agent == "" {
 		if dir, carried := e.findCachedRun(ctx, repo, plan, diff, diffHash, inputsHash); dir != "" {
 			if carried {
 				// A carry is a saving, never a requirement: when it cannot be
@@ -173,9 +196,12 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		}
 	}
 
-	runID, dir, err := e.newRunDir(repo)
+	runID, dir, err := e.newRunDir(repo, prefix)
 	if err != nil {
 		return nil, err
+	}
+	if opt.Started != nil {
+		opt.Started(runID)
 	}
 	if err := writeJSON(filepath.Join(dir, "plan.json"), plan); err != nil {
 		return nil, err
@@ -186,7 +212,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	st := &runStatus{
 		dir: dir, runID: runID, baseRef: base, headRef: head, baseSHA: plan.Base, headSHA: plan.Head,
 		branch: branch, diffHash: diffHash, pr: pr.Number, prURL: pr.URL, state: stateRunning,
-		agents: map[string]*agentStatus{}, startedAt: e.now(), now: e.now,
+		agents: map[string]*agentStatus{}, startedAt: e.now(), now: e.now, notCurrent: opt.Agent != "",
 	}
 	st.update(func() {
 		for _, a := range plan.Agents {
@@ -240,7 +266,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 
 	check, rendered := e.check(cfg, plan, dir, usageSummary)
 	published := ""
-	if opt.Publish {
+	if opt.Publish && opt.Agent == "" {
 		published = e.publish(ctx, repo, dir, pr.Number)
 	}
 	outcome := strings.ToUpper(check.Outcome)
@@ -427,9 +453,14 @@ func (e *Engine) gatesPath(repo string) string {
 // sort by name in the order they were made (LoadRuns, findCachedRun).
 const runDirPrefix = "local-"
 
+// agentRunPrefix names the runs of one agent alone (Options.Agent): kept
+// apart from runDirPrefix's, so the cache, the run list and the newest-run
+// lookups never take one for the gates' run.
+const agentRunPrefix = "agent-"
+
 // newRunDir creates .review/local-<UTC timestamp>, numbered when taken.
-func (e *Engine) newRunDir(repo string) (string, string, error) {
-	base := runDirPrefix + e.now().UTC().Format("20060102T150405Z")
+func (e *Engine) newRunDir(repo, prefix string) (string, string, error) {
+	base := prefix + e.now().UTC().Format("20060102T150405Z")
 	if err := os.MkdirAll(filepath.Join(repo, ".review"), 0o755); err != nil {
 		return "", "", err
 	}

@@ -208,7 +208,7 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	if origin == nil {
 		origin = &gate.Carried{Run: filepath.Base(from), Base: prev.Base, Head: prev.Head}
 	}
-	runID, dir, err := e.newRunDir(repo)
+	runID, dir, err := e.newRunDir(repo, runDirPrefix)
 	if err != nil {
 		return "", err
 	}
