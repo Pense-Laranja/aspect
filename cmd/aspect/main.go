@@ -15,14 +15,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/analyze"
-	"github.com/eideroliveira/aspect/internal/drift"
-	"github.com/eideroliveira/aspect/internal/gate"
-	"github.com/eideroliveira/aspect/internal/importer"
-	"github.com/eideroliveira/aspect/internal/llm"
-	"github.com/eideroliveira/aspect/internal/pipeline"
-	"github.com/eideroliveira/aspect/internal/plan"
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/analyze"
+	"github.com/Pense-Laranja/aspect/internal/drift"
+	"github.com/Pense-Laranja/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/importer"
+	"github.com/Pense-Laranja/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/pipeline"
+	"github.com/Pense-Laranja/aspect/internal/plan"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 const usage = `aspect - build software from a formal specification with a team of agents

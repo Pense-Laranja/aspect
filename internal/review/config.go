@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eideroliveira/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/llm"
 )
 
 // Config is the review engine's configuration. Every field comes from the

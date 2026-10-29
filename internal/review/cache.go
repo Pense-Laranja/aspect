@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eideroliveira/aspect/internal/gate"
-	"github.com/eideroliveira/aspect/internal/gitx"
+	"github.com/Pense-Laranja/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/gitx"
 )
 
 // reusableOutcomes are the outcomes of a run that finished with a verdict.

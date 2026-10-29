@@ -99,7 +99,7 @@ prompt.
 ## Install and run
 
 ```sh
-go install github.com/eideroliveira/aspect/cmd/aspect@latest
+go install github.com/Pense-Laranja/aspect/cmd/aspect@latest
 
 aspect validate examples/inventory/aspect.yaml   # every issue in one pass
 aspect expand   examples/modular_shop/aspect.yaml # a split spec, assembled

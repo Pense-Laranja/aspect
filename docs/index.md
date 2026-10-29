@@ -22,7 +22,7 @@ implementation honours the intent.
 ## Where to start
 
 ```sh
-go install github.com/eideroliveira/aspect/cmd/aspect@latest
+go install github.com/Pense-Laranja/aspect/cmd/aspect@latest
 aspect validate examples/inventory/aspect.yaml
 aspect plan     examples/inventory/aspect.yaml
 aspect run      examples/inventory/aspect.yaml -out ./out
@@ -32,10 +32,10 @@ Examples in the repository:
 
 | Example | Shows |
 |---|---|
-| [monolith_minimal](https://github.com/eideroliveira/aspect/blob/main/examples/monolith_minimal/aspect.yaml) | the smallest spec that runs |
-| [inventory](https://github.com/eideroliveira/aspect/blob/main/examples/inventory/aspect.yaml) | goals, invariants, scenarios, contracts |
-| [warehouse_admin](https://github.com/eideroliveira/aspect/blob/main/examples/warehouse_admin/aspect.yaml) | a Postgres data model, a qor5 admin, an HTTP API |
-| [shop_two_tier](https://github.com/eideroliveira/aspect/blob/main/examples/shop_two_tier/aspect.yaml) | a Go backend and a Swift iOS app in two tiers |
-| [cloud_service_minimal](https://github.com/eideroliveira/aspect/blob/main/examples/cloud_service_minimal/aspect.yaml) | a Swift app over a hosted backend |
+| [monolith_minimal](https://github.com/Pense-Laranja/aspect/blob/main/examples/monolith_minimal/aspect.yaml) | the smallest spec that runs |
+| [inventory](https://github.com/Pense-Laranja/aspect/blob/main/examples/inventory/aspect.yaml) | goals, invariants, scenarios, contracts |
+| [warehouse_admin](https://github.com/Pense-Laranja/aspect/blob/main/examples/warehouse_admin/aspect.yaml) | a Postgres data model, a qor5 admin, an HTTP API |
+| [shop_two_tier](https://github.com/Pense-Laranja/aspect/blob/main/examples/shop_two_tier/aspect.yaml) | a Go backend and a Swift iOS app in two tiers |
+| [cloud_service_minimal](https://github.com/Pense-Laranja/aspect/blob/main/examples/cloud_service_minimal/aspect.yaml) | a Swift app over a hosted backend |
 
-Source and issues: [github.com/eideroliveira/aspect](https://github.com/eideroliveira/aspect).
+Source and issues: [github.com/Pense-Laranja/aspect](https://github.com/Pense-Laranja/aspect).

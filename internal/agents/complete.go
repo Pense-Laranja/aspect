@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eideroliveira/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/llm"
 )
 
 // dataNotInstructions is appended to every agent's system prompt. Agents

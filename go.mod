@@ -1,4 +1,4 @@
-module github.com/eideroliveira/aspect
+module github.com/Pense-Laranja/aspect
 
 go 1.26.4
 

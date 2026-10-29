@@ -8,7 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 // Marshal renders a spec as YAML with a provenance header.

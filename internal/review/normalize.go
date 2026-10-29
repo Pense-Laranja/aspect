@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/gate"
 )
 
 // fencedJSON is a ```json fenced block holding one object.

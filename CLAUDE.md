@@ -2,7 +2,7 @@
 
 Agents that turn a formal specification into code, tests, and a verdict on
 whether the result achieves the spec's stated goals. Go module
-`github.com/eideroliveira/aspect`.
+`github.com/Pense-Laranja/aspect`.
 
 ## Layout
 

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/eideroliveira/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/llm"
 )
 
 func fileDiffText(path string, hunks, linesPerHunk int, line string) string {

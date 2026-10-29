@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/eideroliveira/aspect/internal/review"
+	"github.com/Pense-Laranja/aspect/internal/review"
 )
 
 func TestParseReadArgs(t *testing.T) {

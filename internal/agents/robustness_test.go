@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eideroliveira/aspect/internal/llm"
-	"github.com/eideroliveira/aspect/internal/workspace"
+	"github.com/Pense-Laranja/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/workspace"
 )
 
 // seqLLM plays back one outcome per call, each either a text or an error,

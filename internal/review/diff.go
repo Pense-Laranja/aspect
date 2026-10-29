@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/eideroliveira/aspect/internal/speccontext"
+	"github.com/Pense-Laranja/aspect/internal/speccontext"
 )
 
 // Fitting a git diff to a model's prompt budget without losing reviewable

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/eideroliveira/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/gate"
 )
 
 // The run readers behind `aspect review status|findings|compare|runs`. They

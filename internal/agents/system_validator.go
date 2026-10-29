@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/llm"
-	"github.com/eideroliveira/aspect/internal/spec"
-	"github.com/eideroliveira/aspect/internal/workspace"
+	"github.com/Pense-Laranja/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/workspace"
 )
 
 // ModuleEvidence is what the System Validator knows about one built module.

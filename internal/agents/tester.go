@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/lang"
-	"github.com/eideroliveira/aspect/internal/llm"
-	"github.com/eideroliveira/aspect/internal/workspace"
+	"github.com/Pense-Laranja/aspect/internal/lang"
+	"github.com/Pense-Laranja/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/workspace"
 )
 
 // TestInput is what the Tester sees.

@@ -28,11 +28,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eideroliveira/aspect/internal/gate"
-	"github.com/eideroliveira/aspect/internal/gitx"
-	"github.com/eideroliveira/aspect/internal/llm"
-	"github.com/eideroliveira/aspect/internal/spec"
-	"github.com/eideroliveira/aspect/internal/speccontext"
+	"github.com/Pense-Laranja/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/gitx"
+	"github.com/Pense-Laranja/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/speccontext"
 )
 
 // maxDescriptionChars bounds the PR description given as context: past

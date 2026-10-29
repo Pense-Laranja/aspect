@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/lang"
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/lang"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 // PlanSchema identifies a plan document.

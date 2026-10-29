@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eideroliveira/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/gate"
 )
 
 // A report whose model invented a category (error-handling) is invalid as

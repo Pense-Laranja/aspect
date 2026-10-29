@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/gate"
 )
 
 // Run runs git in dir ("" is the working directory) and returns its output

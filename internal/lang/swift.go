@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 // Swift targets a SwiftPM package. Each spec module becomes a library target

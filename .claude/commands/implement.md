@@ -11,7 +11,7 @@ reaches a judge, and you never decide whether the branch passes.
 
 **aspect** below means `aspect` from `PATH`, or `go run ./cmd/aspect` inside
 the Aspect repository. If neither works, stop and tell the user to install
-it with `go install github.com/eideroliveira/aspect/cmd/aspect@latest`.
+it with `go install github.com/Pense-Laranja/aspect/cmd/aspect@latest`.
 
 **Arguments** (`$ARGUMENTS`): an optional spec reference saying what to
 build (a module, `module.operation`, a scenario or a goal id, in the spec's
