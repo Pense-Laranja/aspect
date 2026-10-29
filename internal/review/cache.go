@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eideroliveira/aspect/internal/gate"
-	"github.com/eideroliveira/aspect/internal/gitx"
+	"github.com/Pense-Laranja/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/gitx"
 )
 
 // reusableOutcomes are the outcomes of a run that finished with a verdict.
@@ -208,7 +208,7 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	if origin == nil {
 		origin = &gate.Carried{Run: filepath.Base(from), Base: prev.Base, Head: prev.Head}
 	}
-	runID, dir, err := e.newRunDir(repo)
+	runID, dir, err := e.newRunDir(repo, runDirPrefix)
 	if err != nil {
 		return "", err
 	}

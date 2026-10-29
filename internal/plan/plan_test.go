@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 func parse(t *testing.T, src string) *spec.Spec {

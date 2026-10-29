@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eideroliveira/aspect/internal/spec"
-	"github.com/eideroliveira/aspect/internal/workspace"
+	"github.com/Pense-Laranja/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/workspace"
 )
 
 func TestNames(t *testing.T) {

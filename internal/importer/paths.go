@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/analyze"
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/analyze"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 // RecoverPaths derives the path of every Go module that has none, for a

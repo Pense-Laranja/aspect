@@ -99,7 +99,7 @@ prompt.
 ## Install and run
 
 ```sh
-go install github.com/eideroliveira/aspect/cmd/aspect@latest
+go install github.com/Pense-Laranja/aspect/cmd/aspect@latest
 
 aspect validate examples/inventory/aspect.yaml   # every issue in one pass
 aspect expand   examples/modular_shop/aspect.yaml # a split spec, assembled
@@ -241,6 +241,15 @@ Aspect review gates can be executed via three environments:
    - Credentials come from `GEMINI_API_KEY` or `GOOGLE_API_KEY`; the `CODE_REVIEWER_*` variables tune timeouts, retries, concurrency and the prompt budget (`internal/review/config.go`).
    - Each reviewer is shown the system's constraints and the rules of the modules its files belong to (constraints, invariants, operations, scenarios, brief), within `CODE_REVIEWER_SPEC_BUDGET` tokens (30000; 0 shows none): a rule written in the spec is checked on every change to its module. Only files committed at the change's head are shown, and the result says when the reviewers saw less of the spec than it holds. `aspect context _aspect/aspect.yaml <file|dir|module>...` prints the same text, for a person or a coding assistant about to edit that code.
    - It replaces CodeReviewer (the Python `aspect-review gates` CLI and MCP server), with the same run files, variables and exit codes.
+   - **`aspect mcp`** serves the same engine to an MCP client (the Claude desktop app, Claude Code, Antigravity) on stdin/stdout, under the tool names CodeReviewer's server used: `review_with_aspect_gates`, `run_single_aspect_agent`, `get_review_status`, `get_review_findings`, `compare_review_runs`, `list_review_runs`, `check_review_engine_status`. A review waits about 40 s for its verdict and otherwise returns the run id to poll; it runs under the server, so a client cancelling the call does not stop it. `pr_id` takes a number or a string. `run_single_aspect_agent` records its run as `.review/agent-<time>`, never published, reused or made the current run, so one agent's verdict never reads as the gates'. `check_review_engine_status` names the aspect commit the server was built at: build it at the commit a repository's `aspect.lock` pins. Configured by the same environment as `aspect review`, for example:
+
+     ```json
+     "aspect-code-reviewer": {
+       "command": "/path/to/aspect",
+       "args": ["mcp"],
+       "env": {"CODE_REVIEWER_DEFAULT_REPO": "/path/to/repository"}
+     }
+     ```
 2. **Claude Code (Interactive CLI):**
    Runs interactively inside Claude Code via the `/review` command or `.claude/review/run.sh`.
 3. **Gemini CLI / Headless CI:**

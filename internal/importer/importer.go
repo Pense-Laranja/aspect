@@ -22,10 +22,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eideroliveira/aspect/internal/agents"
-	"github.com/eideroliveira/aspect/internal/analyze"
-	"github.com/eideroliveira/aspect/internal/llm"
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/agents"
+	"github.com/Pense-Laranja/aspect/internal/analyze"
+	"github.com/Pense-Laranja/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 // Options configure an import.

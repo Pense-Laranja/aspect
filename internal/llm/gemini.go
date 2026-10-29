@@ -343,3 +343,43 @@ func geminiRetryWait(h http.Header, body string, attempt int, base time.Duration
 	}
 	return min(time.Duration(float64(base)*math.Pow(2, float64(attempt))), geminiMaxRetryWait)
 }
+
+// GeminiModelInfo is what the API says of a model.
+type GeminiModelInfo struct {
+	Name            string `json:"name"`
+	InputTokenLimit int    `json:"inputTokenLimit"`
+}
+
+// CheckModel asks the API about the configured model, which tells whether
+// it is reachable with the key and what the model's input limit is. It
+// sends no prompt, so it costs nothing.
+func (g *Gemini) CheckModel(ctx context.Context) (GeminiModelInfo, error) {
+	if g.key == "" {
+		return GeminiModelInfo{}, ErrNoGeminiKey
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/models/%s", g.base, g.model), nil)
+	if err != nil {
+		return GeminiModelInfo{}, err
+	}
+	hreq.Header.Set("x-goog-api-key", g.key)
+	resp, err := g.http.Do(hreq)
+	if err != nil {
+		return GeminiModelInfo{}, fmt.Errorf("Gemini %s: %v", g.model, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		body := string(raw)
+		if len(body) > geminiMaxErrorBody {
+			body = body[:geminiMaxErrorBody]
+		}
+		return GeminiModelInfo{}, fmt.Errorf("Gemini %s: HTTP %d: %s", g.model, resp.StatusCode, strings.TrimSpace(body))
+	}
+	var info GeminiModelInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return GeminiModelInfo{}, fmt.Errorf("Gemini %s: unreadable answer: %v", g.model, err)
+	}
+	return info, nil
+}

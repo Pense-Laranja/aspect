@@ -12,9 +12,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/eideroliveira/aspect/internal/lang"
-	"github.com/eideroliveira/aspect/internal/spec"
-	"github.com/eideroliveira/aspect/internal/workspace"
+	"github.com/Pense-Laranja/aspect/internal/lang"
+	"github.com/Pense-Laranja/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/workspace"
 )
 
 // Task is the part of the input every agent shares.

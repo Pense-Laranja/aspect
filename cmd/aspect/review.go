@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/eideroliveira/aspect/internal/gate"
-	"github.com/eideroliveira/aspect/internal/review"
+	"github.com/Pense-Laranja/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/review"
 )
 
 // exitCode is an error that ends the command with a given exit status.

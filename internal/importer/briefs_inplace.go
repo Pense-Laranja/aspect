@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 // copyMarker opens every brief `aspect import` copies out of a package.

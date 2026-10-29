@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 func TestModuleDir(t *testing.T) {

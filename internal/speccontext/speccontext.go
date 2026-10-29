@@ -27,7 +27,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 // CharsPerToken is the estimate the budget is counted in, and the review

@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/eideroliveira/aspect/internal/gate"
-	"github.com/eideroliveira/aspect/internal/gitx"
-	"github.com/eideroliveira/aspect/internal/review"
+	"github.com/Pense-Laranja/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/gitx"
+	"github.com/Pense-Laranja/aspect/internal/review"
 )
 
 // runGate dispatches `aspect gate plan|check|render`.

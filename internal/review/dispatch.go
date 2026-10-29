@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eideroliveira/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/llm"
 )
 
 // The prompt layout, the same for every reviewer:

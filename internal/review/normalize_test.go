@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/eideroliveira/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/gate"
 )
 
 // Reports must decode under `aspect gate check`, which decodes strictly

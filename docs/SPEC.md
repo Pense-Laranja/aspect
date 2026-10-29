@@ -412,8 +412,8 @@ an external provider or database means `cloud_service`, otherwise
 `stack` and `modules` sit at the top. A `cloud_service` spec differs only in
 that its server-side interfaces and its database carry `provider: external`
 and `tier: external`. See
-[examples/monolith_minimal](https://github.com/eideroliveira/aspect/blob/main/examples/monolith_minimal/aspect.yaml) and
-[examples/cloud_service_minimal](https://github.com/eideroliveira/aspect/blob/main/examples/cloud_service_minimal/aspect.yaml).
+[examples/monolith_minimal](https://github.com/Pense-Laranja/aspect/blob/main/examples/monolith_minimal/aspect.yaml) and
+[examples/cloud_service_minimal](https://github.com/Pense-Laranja/aspect/blob/main/examples/cloud_service_minimal/aspect.yaml).
 
 ### Multi-tier specs
 
@@ -463,7 +463,7 @@ through `consumes`); tier dependencies are acyclic. Each tier is generated
 into its own workspace, `out/<system>/<tier>/`, in dependency order. A
 single-tier spec keeps `out/<system>/`.
 
-Full example: [examples/shop_two_tier](https://github.com/eideroliveira/aspect/blob/main/examples/shop_two_tier/aspect.yaml).
+Full example: [examples/shop_two_tier](https://github.com/Pense-Laranja/aspect/blob/main/examples/shop_two_tier/aspect.yaml).
 
 ---
 
@@ -841,7 +841,7 @@ under review must not be able to name anyone's other files. (Dependency
 and it is never put in a prompt.) `aspect expand spec.yaml` prints the
 assembled document, which is what the loader validates, so unknown keys
 in fragments are still caught. See
-[examples/modular_shop](https://github.com/eideroliveira/aspect/blob/main/examples/modular_shop/aspect.yaml).
+[examples/modular_shop](https://github.com/Pense-Laranja/aspect/blob/main/examples/modular_shop/aspect.yaml).
 
 ### One file per module: `aspect split`
 

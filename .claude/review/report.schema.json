@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eideroliveira/aspect/.claude/review/report.schema.json",
+  "$id": "https://github.com/Pense-Laranja/aspect/.claude/review/report.schema.json",
   "title": "Aspect review report",
   "description": "What every review agent writes at the end of a run (docs/design.md section 2.5). Agents never state a verdict; `aspect gate check` computes it. internal/gate/report.go enforces the same rules and a test keeps the two in sync.",
   "type": "object",

@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/eideroliveira/aspect/internal/importer"
-	"github.com/eideroliveira/aspect/internal/lang"
-	"github.com/eideroliveira/aspect/internal/spec"
-	"github.com/eideroliveira/aspect/internal/speccontext"
+	"github.com/Pense-Laranja/aspect/internal/importer"
+	"github.com/Pense-Laranja/aspect/internal/lang"
+	"github.com/Pense-Laranja/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/speccontext"
 )
 
 // runContext prints what the spec says about the modules that own the

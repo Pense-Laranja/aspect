@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eideroliveira/aspect/internal/gate"
-	"github.com/eideroliveira/aspect/internal/llm"
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/gate"
+	"github.com/Pense-Laranja/aspect/internal/llm"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 // The pipeline must leave no report for a gate agent that failed, record a
@@ -838,9 +838,9 @@ func TestOriginSlug(t *testing.T) {
 	repo := testRepo(t)
 	for url, want := range map[string]string{
 		"https://github.com/Pense-Laranja/gordpress.git":                 "Pense-Laranja/gordpress",
-		"git@github.com:eideroliveira/aspect.git":                        "eideroliveira/aspect",
+		"git@github.com:Pense-Laranja/aspect.git":                        "Pense-Laranja/aspect",
 		"http://local_proxy@127.0.0.1:41231/git/Pense-Laranja/gordpress": "Pense-Laranja/gordpress",
-		"https://github.com/eideroliveira/aspect/":                       "eideroliveira/aspect",
+		"https://github.com/Pense-Laranja/aspect/":                       "Pense-Laranja/aspect",
 	} {
 		gitIn(t, repo, "remote", "remove", "origin")
 		gitIn(t, repo, "remote", "add", "origin", url)

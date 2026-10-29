@@ -95,6 +95,8 @@ type runStatus struct {
 	finishedAt time.Time
 	usage      Usage
 	now        func() time.Time
+	// notCurrent keeps the run out of current_run.json (Options.Agent).
+	notCurrent bool
 }
 
 // computeOutcome is the outcome the agents' states support, failing closed:
@@ -473,7 +475,9 @@ func (r *runStatus) save() {
 	if err := writeJSON(filepath.Join(r.dir, "status.json"), r.document()); err != nil {
 		fmt.Fprintf(os.Stderr, "aspect review: writing %s/status.json: %v\n", r.dir, err)
 	}
-	writeCurrentRun(filepath.Dir(r.dir), r.runID, r.state, r.now())
+	if !r.notCurrent {
+		writeCurrentRun(filepath.Dir(r.dir), r.runID, r.state, r.now())
+	}
 }
 
 func writeCurrentRun(reviewDir, runID, state string, now time.Time) {

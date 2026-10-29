@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/eideroliveira/aspect/internal/spec"
+	"github.com/Pense-Laranja/aspect/internal/spec"
 )
 
 // Step is the work the pipeline performs for one module.
