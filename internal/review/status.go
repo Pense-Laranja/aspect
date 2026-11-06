@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Pense-Laranja/aspect/internal/gate"
 )
 
 // StatusSchema identifies a run's status.json.
@@ -70,6 +72,17 @@ type agentStatus struct {
 	blockers          int
 	warnings          int
 	usage             usage
+	carriedFrom       *gate.Carried
+}
+
+func (a *agentStatus) applyCarried(rep *Report, origin *gate.Carried, now time.Time) {
+	a.state = stateCompleted
+	a.startedAt = now
+	a.finishedAt = now
+	a.summary = rep.Summary
+	a.findings = rep.Findings
+	a.blockers, a.warnings = rep.blockersAndWarnings()
+	a.carriedFrom = origin
 }
 
 // runStatus is a run's progress, kept in .review/<run-id>/status.json and
@@ -389,6 +402,13 @@ func (r *runStatus) document() *Object {
 		e.Set("engine", nullable(a.engine))
 		e.Set("parts_total", a.partsTotal)
 		e.Set("parts_done", a.partsDone)
+		if a.carriedFrom != nil {
+			cf := NewObject()
+			cf.Set("run", a.carriedFrom.Run)
+			cf.Set("base", a.carriedFrom.Base)
+			cf.Set("head", a.carriedFrom.Head)
+			e.Set("carried_from", cf)
+		}
 		if !a.startedAt.IsZero() && !a.finishedAt.IsZero() {
 			e.Set("duration_seconds", roundTo(a.finishedAt.Sub(a.startedAt).Seconds(), 1))
 		}

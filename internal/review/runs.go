@@ -58,18 +58,19 @@ func (r *RunSummary) tokens() int64 {
 
 // AgentSummary is one agent of a run.
 type AgentSummary struct {
-	Name          string  `json:"name"`
-	Mode          string  `json:"mode"`
-	State         string  `json:"state"`
-	Verdict       string  `json:"verdict"`
-	Summary       string  `json:"summary"`
-	FindingsCount int     `json:"findings_count"`
-	BlockersCount int     `json:"blockers_count"`
-	WarningsCount int     `json:"warnings_count"`
-	Error         string  `json:"error"`
-	PartsTotal    int     `json:"parts_total"`
-	PartsDone     int     `json:"parts_done"`
-	CostUSD       float64 `json:"cost_usd"`
+	Name          string        `json:"name"`
+	Mode          string        `json:"mode"`
+	State         string        `json:"state"`
+	Verdict       string        `json:"verdict"`
+	Summary       string        `json:"summary"`
+	FindingsCount int           `json:"findings_count"`
+	BlockersCount int           `json:"blockers_count"`
+	WarningsCount int           `json:"warnings_count"`
+	Error         string        `json:"error"`
+	PartsTotal    int           `json:"parts_total"`
+	PartsDone     int           `json:"parts_done"`
+	CostUSD       float64       `json:"cost_usd"`
+	CarriedFrom   *gate.Carried `json:"carried_from,omitempty"`
 }
 
 // FindingSummary is one finding of a run, with the agent that reported it.

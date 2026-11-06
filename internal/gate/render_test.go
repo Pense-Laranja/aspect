@@ -213,3 +213,100 @@ func TestRender_UsageFooterAppended(t *testing.T) {
 		}
 	})
 }
+
+func TestRenderPerAgentCarried(t *testing.T) {
+	c := &Config{Spec: "spec.yaml"}
+	p := &Plan{Base: "1111111111111111", Head: "2222222222222222", ChangedFiles: 2, ChangedLines: 20}
+
+	t.Run("mixed carried and fresh agents", func(t *testing.T) {
+		r := &Result{
+			Outcome: Pass,
+			Agents: []AgentResult{
+				{
+					Agent:       "spec-keeper",
+					Mode:        "gate",
+					Status:      StatusOK,
+					Summary:     "Spec matches.",
+					CarriedFrom: &Carried{Run: "local-1", Base: "1111111111111111", Head: "abcdef1234567890"},
+				},
+				{
+					Agent:   "adversarial-reviewer",
+					Mode:    "gate",
+					Status:  StatusOK,
+					Summary: "No bugs.",
+				},
+			},
+		}
+		got := Render(c, p, r, RenderOptions{})
+		wantNote := "**Carried from earlier review:** `spec-keeper` (from `local-1` at `abcdef123456`); re-ran `adversarial-reviewer` on this head."
+		if !strings.Contains(got, wantNote) {
+			t.Errorf("rendered missing note %q:\n%s", wantNote, got)
+		}
+		if !strings.Contains(got, "_Carried from run `local-1` (`abcdef123456`)._") {
+			t.Errorf("rendered missing per-agent carried note:\n%s", got)
+		}
+		if strings.Count(got, "_Carried from run") != 1 {
+			t.Errorf("expected exactly 1 per-agent carried note, got:\n%s", got)
+		}
+	})
+
+	t.Run("all agents carried individually without plan CarriedFrom", func(t *testing.T) {
+		r := &Result{
+			Outcome: Pass,
+			Agents: []AgentResult{
+				{
+					Agent:       "spec-keeper",
+					Mode:        "gate",
+					Status:      StatusOK,
+					Summary:     "Spec matches.",
+					CarriedFrom: &Carried{Run: "local-1", Base: "1111111111111111", Head: "abcdef1234567890"},
+				},
+			},
+		}
+		got := Render(c, p, r, RenderOptions{Usage: &UsageSummary{Reused: true}})
+		wantNote := "**Carried from earlier review:** `spec-keeper` (from `local-1` at `abcdef123456`); no agent needed to re-run on this head."
+		if !strings.Contains(got, wantNote) {
+			t.Errorf("rendered missing note %q:\n%s", wantNote, got)
+		}
+		if !strings.Contains(got, "Cost: $0.0000 (reused)") {
+			t.Errorf("rendered missing reused cost footer:\n%s", got)
+		}
+	})
+
+	t.Run("whole-plan CarriedFrom suppresses matching per-agent note but keeps earlier origin note", func(t *testing.T) {
+		pWhole := *p
+		pWhole.CarriedFrom = &Carried{Run: "local-1", Base: "1111111111111111", Head: "abcdef1234567890"}
+		r := &Result{
+			Outcome: Pass,
+			Agents: []AgentResult{
+				{
+					Agent:       "spec-keeper",
+					Mode:        "gate",
+					Status:      StatusOK,
+					Summary:     "Spec matches.",
+					CarriedFrom: &Carried{Run: "local-0", Base: "0000000000000000", Head: "9999999999999999"},
+				},
+				{
+					Agent:       "adversarial-reviewer",
+					Mode:        "gate",
+					Status:      StatusOK,
+					Summary:     "Clean.",
+					CarriedFrom: &Carried{Run: "local-1", Base: "1111111111111111", Head: "abcdef1234567890"},
+				},
+			},
+		}
+		got := Render(c, &pWhole, r, RenderOptions{})
+		if !strings.Contains(got, "**Verdict carried** from run `local-1`") {
+			t.Errorf("expected whole-plan Verdict carried note:\n%s", got)
+		}
+		if strings.Contains(got, "**Carried from earlier review:**") {
+			t.Errorf("whole-plan CarriedFrom should suppress top-level per-agent summary banner:\n%s", got)
+		}
+		if !strings.Contains(got, "_Carried from run `local-0` (`999999999999`)._") {
+			t.Errorf("expected earlier origin note for spec-keeper:\n%s", got)
+		}
+		if strings.Contains(got, "_Carried from run `local-1`") {
+			t.Errorf("matching whole-plan CarriedFrom should not repeat per-agent note for local-1:\n%s", got)
+		}
+	})
+}

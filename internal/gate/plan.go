@@ -114,6 +114,25 @@ type Planned struct {
 	Reason  string   `json:"reason"`
 	Files   []string `json:"files"`
 	Modules []string `json:"modules,omitempty"`
+	// CarriedFrom names the earlier run and range whose report for this
+	// agent is carried to this head. Set by the review engine when an
+	// agent's earlier verdict still holds for this head.
+	CarriedFrom *Carried `json:"carried_from,omitempty"`
+}
+
+// reviews says whether a report of base...head belongs to this planned
+// agent: it reviews the plan's range (or the plan's carried range), or, for
+// an agent carried individually, the range of the run it was carried from.
+func (pl Planned) reviews(p *Plan, base, head string) bool {
+	if p.reviews(base, head) {
+		return true
+	}
+	c := pl.CarriedFrom
+	if c == nil {
+		return false
+	}
+	named := c.Base != "" && c.Head != "" && base != "" && head != ""
+	return named && SameRev(base, c.Base) && SameRev(head, c.Head)
 }
 
 // BuildPlan decides which gates apply to the changes, in the order
