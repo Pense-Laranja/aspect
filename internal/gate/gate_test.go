@@ -884,3 +884,135 @@ func TestACarriedPlanAcceptsItsRunsReports(t *testing.T) {
 		}
 	}
 }
+
+func TestAPerAgentCarriedPlanAcceptsItsAgentsReports(t *testing.T) {
+	const base, head = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	const oldBase, oldHead = "3333333333333333333333333333333333333333", "4444444444444444444444444444444444444444"
+
+	c := mustConfig(t)
+	p := &Plan{
+		Schema: PlanSchema,
+		Spec:   c.Spec,
+		Base:   base,
+		Head:   head,
+		Agents: []Planned{
+			{
+				Agent:       "spec-keeper",
+				Mode:        "gate",
+				CarriedFrom: &Carried{Run: "local-1", Base: oldBase, Head: oldHead},
+			},
+			{
+				Agent: "adversarial-reviewer",
+				Mode:  "gate",
+			},
+		},
+	}
+
+	// Unit-level Planned.reviews boundary matrix
+	plCarried := p.Agents[0]
+	plFresh := p.Agents[1]
+	for _, tc := range []struct {
+		name       string
+		pl         Planned
+		base, head string
+		want       bool
+	}{
+		{"carried agent accepts plan range", plCarried, base, head, true},
+		{"carried agent accepts carried range", plCarried, oldBase, oldHead, true},
+		{"carried agent accepts abbreviated carried range", plCarried, oldBase[:12], oldHead[:12], true},
+		{"carried agent rejects hybrid range", plCarried, oldBase, head, false},
+		{"carried agent rejects empty carried base", Planned{Agent: "spec-keeper", CarriedFrom: &Carried{Run: "local-1", Head: oldHead}}, oldBase, oldHead, false},
+		{"carried agent rejects empty carried head", Planned{Agent: "spec-keeper", CarriedFrom: &Carried{Run: "local-1", Base: oldBase}}, oldBase, oldHead, false},
+		{"carried agent rejects report with empty base", plCarried, "", oldHead, false},
+		{"carried agent rejects report with empty head", plCarried, oldBase, "", false},
+		{"fresh agent accepts plan range", plFresh, base, head, true},
+		{"fresh agent rejects carried range", plFresh, oldBase, oldHead, false},
+	} {
+		if got := tc.pl.reviews(p, tc.base, tc.head); got != tc.want {
+			t.Errorf("%s: pl.reviews(%q, %q) = %v, want %v", tc.name, tc.base, tc.head, got, tc.want)
+		}
+	}
+
+	repWithRange := func(agent, mode, b, h string) []byte {
+		r := Report{Schema: ReportSchema, Agent: agent, Mode: mode, Base: b, Head: h, Summary: "checked", Findings: []Finding{}, Handoffs: []Handoff{}, Changes: []Written{}}
+		data, _ := json.Marshal(r)
+		return data
+	}
+
+	// Mixed plan Check: carried agent has old range report, fresh agent has current range report -> Pass
+	res := Check(c, p, map[string]Input{
+		"spec-keeper":          {Data: repWithRange("spec-keeper", "gate", oldBase, oldHead)},
+		"adversarial-reviewer": {Data: repWithRange("adversarial-reviewer", "gate", base, head)},
+	}, false)
+	if res.Outcome != Pass {
+		t.Fatalf("mixed carried/fresh check outcome = %s, want pass (%+v)", res.Outcome, res.Agents)
+	}
+	if res.Agents[0].CarriedFrom == nil || res.Agents[0].CarriedFrom.Run != "local-1" {
+		t.Errorf("spec-keeper CarriedFrom = %+v, want local-1", res.Agents[0].CarriedFrom)
+	}
+	if res.Agents[1].CarriedFrom != nil {
+		t.Errorf("adversarial-reviewer CarriedFrom = %+v, want nil", res.Agents[1].CarriedFrom)
+	}
+
+	// Uncarried sibling receives old range report -> StatusInvalid, Block
+	badRes := Check(c, p, map[string]Input{
+		"spec-keeper":          {Data: repWithRange("spec-keeper", "gate", oldBase, oldHead)},
+		"adversarial-reviewer": {Data: repWithRange("adversarial-reviewer", "gate", oldBase, oldHead)},
+	}, false)
+	if badRes.Outcome != Block || badRes.Agents[1].Status != StatusInvalid {
+		t.Errorf("uncarried agent with old range: outcome = %s, status = %s, want block/invalid", badRes.Outcome, badRes.Agents[1].Status)
+	}
+}
+
+func TestGateHelperMethods(t *testing.T) {
+	c := mustParse(t, `
+gates:
+  - agent: prod-only
+    paths: ["**/*.go", "!**/*_test.go"]
+    mode: gate
+  - agent: arch
+    paths: ["internal/**", "!**/*_test.go", "go.mod"]
+    mode: advisory
+    when:
+      min_changed_lines: 100
+      or_touches: ["go.mod", "internal/core/**", "!internal/core/*_gen.go"]
+`)
+	if _, ok := c.GateFor("non-existent"); ok {
+		t.Error("GateFor(non-existent) returned true")
+	}
+	prodGate, ok := c.GateFor("prod-only")
+	if !ok || prodGate.Agent != "prod-only" {
+		t.Fatalf("GateFor(prod-only) = %+v, %v", prodGate, ok)
+	}
+	if !prodGate.MatchesPath("internal/gate/plan.go") {
+		t.Error("prodGate.MatchesPath(internal/gate/plan.go) = false, want true")
+	}
+	if prodGate.MatchesPath("internal/gate/gate_test.go") {
+		t.Error("prodGate.MatchesPath(internal/gate/gate_test.go) = true, want false")
+	}
+	if prodGate.MatchesWhen([]Change{{Path: "internal/gate/plan.go", Added: 500}}) {
+		t.Error("prodGate.MatchesWhen with nil When returned true, want false")
+	}
+
+	archGate, ok := c.GateFor("arch")
+	if !ok {
+		t.Fatal("GateFor(arch) = false")
+	}
+	for _, tc := range []struct {
+		name    string
+		changes []Change
+		want    bool
+	}{
+		{"below line threshold in matching file", []Change{{Path: "internal/gate/plan.go", Added: 60, Deleted: 39}}, false},
+		{"at exact line threshold in matching file", []Change{{Path: "internal/gate/plan.go", Added: 60, Deleted: 40}}, true},
+		{"non-matching file lines do not count", []Change{{Path: "internal/gate/plan.go", Added: 10}, {Path: "internal/gate/gate_test.go", Added: 200}}, false},
+		{"matches or_touches go.mod", []Change{{Path: "go.mod", Added: 1}}, true},
+		{"matches or_touches internal/core", []Change{{Path: "internal/core/engine.go", Added: 2}}, true},
+		{"negated in or_touches and below threshold", []Change{{Path: "internal/core/types_gen.go", Added: 10}}, false},
+		{"no matching files at all", []Change{{Path: "README.md", Added: 500}}, false},
+	} {
+		if got := archGate.MatchesWhen(tc.changes); got != tc.want {
+			t.Errorf("%s: archGate.MatchesWhen = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

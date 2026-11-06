@@ -1230,3 +1230,572 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+func setupScopedRepo(t *testing.T, gatesYAML string, agents []string) string {
+	t.Helper()
+	repo := testRepo(t)
+	gitIn(t, repo, "checkout", "-q", "main")
+	writeFile(t, filepath.Join(repo, ".claude/review/gates.yaml"), gatesYAML)
+	for _, a := range agents {
+		writeFile(t, filepath.Join(repo, ".claude/agents", a+".md"), "---\nname: "+a+"\n---\n"+a+"\n")
+	}
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "gates and agents")
+	gitIn(t, repo, "checkout", "-q", "feature")
+	gitIn(t, repo, "merge", "-q", "--no-edit", "main")
+	return repo
+}
+
+func TestSelectiveCarryTier1_UnchangedScopedDiff(t *testing.T) {
+	gatesYAML := `gates:
+  - agent: prod-reviewer
+    paths: ["**/*.go", "!**/*_test.go"]
+    mode: gate
+  - agent: test-reviewer
+    paths: ["**/*_test.go"]
+    mode: gate
+`
+	repo := setupScopedRepo(t, gatesYAML, []string{"prod-reviewer", "test-reviewer"})
+	writeFile(t, filepath.Join(repo, "a_test.go"), "package a\n\nfunc TestA() {}\n")
+	gitIn(t, repo, "add", "a_test.go")
+	gitIn(t, repo, "commit", "-q", "-m", "add test")
+
+	// Run 1: both prod-reviewer and test-reviewer run; test-reviewer blocks.
+	te1 := newTestEngine(t, repo, map[string]any{
+		"prod-reviewer": clean,
+		"test-reviewer": `{"summary": "missing assertion", "findings": [{"severity": "high", "category": "test-gap", "title": "Add assertion", "location": {"file": "a_test.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.9}]}`,
+	})
+	first := te1.run(t, Options{})
+	if first.Outcome != OutcomeBlock || te1.model.callCount() != 2 {
+		t.Fatalf("first outcome = %s, calls = %d", first.Outcome, te1.model.callCount())
+	}
+	firstHead := headOf(t, repo)
+
+	// Commit 2: fix a_test.go only; a.go is untouched, so prod-reviewer's scoped diff is identical (Tier 1).
+	writeFile(t, filepath.Join(repo, "a_test.go"), "package a\n\nfunc TestA() { A() }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "fix test assertion")
+
+	te2 := newTestEngine(t, repo, map[string]any{
+		"prod-reviewer": errors.New("prod-reviewer must be carried, not called"),
+		"test-reviewer": clean,
+	})
+	second := te2.run(t, Options{})
+	if second.Outcome != OutcomePass || second.Cached || te2.model.callCount() != 1 {
+		t.Fatalf("second = %+v, calls = %v", second, te2.model.calls)
+	}
+	plan, check := checkRun(t, repo, second.RunDir)
+	if check.Outcome != gate.Pass {
+		t.Fatalf("gate check = %+v", check)
+	}
+	prodPlanned, ok := plan.Agent("prod-reviewer")
+	if !ok || prodPlanned.CarriedFrom == nil || prodPlanned.CarriedFrom.Run != first.RunID || prodPlanned.CarriedFrom.Head != firstHead {
+		t.Errorf("prod-reviewer CarriedFrom = %+v, want run %s head %s", prodPlanned.CarriedFrom, first.RunID, firstHead)
+	}
+	if testPlanned, _ := plan.Agent("test-reviewer"); testPlanned.CarriedFrom != nil {
+		t.Errorf("test-reviewer should have run fresh, got CarriedFrom = %+v", testPlanned.CarriedFrom)
+	}
+	if !strings.Contains(second.Rendered, "**Carried from earlier review:** `prod-reviewer`") ||
+		!strings.Contains(second.Rendered, "re-ran `test-reviewer` on this head.") {
+		t.Errorf("rendered missing carried note:\n%s", second.Rendered)
+	}
+	// Verify LoadRun unmarshals AgentSummary.CarriedFrom from status.json.
+	summary, err := LoadRun(repo, second.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Agents["prod-reviewer"].CarriedFrom == nil || summary.Agents["prod-reviewer"].CarriedFrom.Run != first.RunID {
+		t.Errorf("status.json prod-reviewer CarriedFrom = %+v", summary.Agents["prod-reviewer"].CarriedFrom)
+	}
+	if summary.Agents["prod-reviewer"].CostUSD != 0 {
+		t.Errorf("carried agent cost = %v, want 0", summary.Agents["prod-reviewer"].CostUSD)
+	}
+}
+
+func TestSelectiveCarryTier2a_DisjointDeltaPaths(t *testing.T) {
+	gatesYAML := `gates:
+  - agent: docs-reviewer
+    paths: ["docs/**"]
+    mode: gate
+  - agent: go-reviewer
+    paths: ["**/*.go"]
+    mode: gate
+`
+	repo := setupScopedRepo(t, gatesYAML, []string{"docs-reviewer", "go-reviewer"})
+	writeFile(t, filepath.Join(repo, "docs/guide.md"), "# Guide\n")
+	gitIn(t, repo, "add", "docs/guide.md")
+	gitIn(t, repo, "commit", "-q", "-m", "add docs")
+
+	// Run 1: both pass cleanly (0 blockers, 0 warnings).
+	te1 := newTestEngine(t, repo, map[string]any{"docs-reviewer": clean, "go-reviewer": clean})
+	first := te1.run(t, Options{})
+	if first.Outcome != OutcomePass {
+		t.Fatalf("first = %+v", first)
+	}
+
+	// Commit 2: modify a.go only. Even though Run 1 was a clean PASS, docs/** was not touched
+	// since Run 1's head (Tier 1 & Tier 2a), while go-reviewer's scoped diff changed after a PASS
+	// and therefore must re-run.
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { println(1) }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "update go")
+
+	te2 := newTestEngine(t, repo, map[string]any{
+		"docs-reviewer": errors.New("docs-reviewer must be carried"),
+		"go-reviewer":   clean,
+	})
+	second := te2.run(t, Options{})
+	if second.Outcome != OutcomePass || te2.model.callCount() != 1 || te2.model.calls[0] != "go-reviewer" {
+		t.Fatalf("second = %+v, calls = %v", second, te2.model.calls)
+	}
+}
+
+func TestSelectiveCarryTier2b_CommentResolutionSkipsCleanBroadAndWhenGatedAgents(t *testing.T) {
+	gatesYAML := `gates:
+  - agent: spec-keeper
+    paths: ["**"]
+    mode: gate
+  - agent: adversarial-reviewer
+    paths: ["**/*.go", "!**/*_test.go"]
+    mode: gate
+  - agent: architect
+    paths: ["**/*.go", "!**/*_test.go", "go.mod"]
+    mode: advisory
+    when:
+      min_changed_lines: 10
+      or_touches: ["go.mod"]
+`
+	repo := setupScopedRepo(t, gatesYAML, []string{"spec-keeper", "adversarial-reviewer", "architect"})
+	// Make a 15-line change in a.go so architect is scheduled in the branch plan.
+	var lines []string
+	lines = append(lines, "package a", "")
+	for i := 0; i < 12; i++ {
+		lines = append(lines, fmt.Sprintf("func F%d() {}", i))
+	}
+	writeFile(t, filepath.Join(repo, "a.go"), strings.Join(lines, "\n")+"\n")
+	gitIn(t, repo, "commit", "-q", "-am", "15 lines in a.go")
+
+	// Run 1: adversarial-reviewer reports a blocking finding on a.go; spec-keeper and architect pass cleanly.
+	te1 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":          clean,
+		"adversarial-reviewer": `{"summary": "bug", "findings": [{"severity": "high", "category": "correctness", "title": "Nil deref", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.9}]}`,
+		"architect":            clean,
+	})
+	first := te1.run(t, Options{})
+	if first.Outcome != OutcomeBlock || te1.model.callCount() != 3 {
+		t.Fatalf("first = %s, calls = %d", first.Outcome, te1.model.callCount())
+	}
+
+	// Commit 2: 2-line fix in a.go to address adversarial-reviewer's blocker.
+	// Delta is 2 lines in a.go (below architect's 10-line When threshold, and does not touch go.mod).
+	// Because Run 1 had blockers and spec-keeper + architect had 0 blockers, Tier 2b carries both
+	// spec-keeper (even though "**" matches a.go!) and architect, re-running ONLY adversarial-reviewer!
+	lines[2] = "func F0() { /* fixed */ }"
+	writeFile(t, filepath.Join(repo, "a.go"), strings.Join(lines, "\n")+"\n")
+	gitIn(t, repo, "commit", "-q", "-am", "fix blocker in a.go")
+
+	te2 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":          errors.New("spec-keeper must be carried via Tier 2b"),
+		"adversarial-reviewer": `{"summary": "still one blocker", "findings": [{"severity": "high", "category": "correctness", "title": "Edge case", "location": {"file": "a.go", "line": 4}, "evidence": "e", "recommendation": "r", "confidence": 0.9}]}`,
+		"architect":            errors.New("architect must be carried via Tier 2b"),
+	})
+	second := te2.run(t, Options{})
+	if second.Outcome != OutcomeBlock || te2.model.callCount() != 1 || te2.model.calls[0] != "adversarial-reviewer" {
+		t.Fatalf("second = %s, calls = %v", second.Outcome, te2.model.calls)
+	}
+	if _, check := checkRun(t, repo, second.RunDir); check.Outcome != gate.Block {
+		t.Fatalf("gate check = %+v", check)
+	}
+
+	// Commit 3: fix the remaining blocker in a.go with a larger edit (6 lines modified = 12 changed lines)
+	// that reaches architect's min_changed_lines: 10 When threshold on a.go without adding new files.
+	// Now spec-keeper is still carried via Tier 2b, but architect's When condition IS triggered by the delta
+	// since architect's origin head, so architect MUST re-run alongside adversarial-reviewer!
+	for i := 3; i < 9; i++ {
+		lines[i] = fmt.Sprintf("func F%d() { /* refactored */ }", i-2)
+	}
+	writeFile(t, filepath.Join(repo, "a.go"), strings.Join(lines, "\n")+"\n")
+	gitIn(t, repo, "commit", "-q", "-am", "fix edge case with 12 changed lines in a.go")
+
+	te3 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":          errors.New("spec-keeper must still be carried via Tier 2b"),
+		"adversarial-reviewer": clean,
+		"architect":            clean,
+	})
+	third := te3.run(t, Options{})
+	if third.Outcome != OutcomePass || te3.model.callCount() != 2 {
+		t.Fatalf("third = %s, calls = %v", third.Outcome, te3.model.calls)
+	}
+	plan3, check3 := checkRun(t, repo, third.RunDir)
+	if check3.Outcome != gate.Pass {
+		t.Fatalf("check3 = %+v", check3)
+	}
+	// spec-keeper was carried transitively from Run 1!
+	if sk, _ := plan3.Agent("spec-keeper"); sk.CarriedFrom == nil || sk.CarriedFrom.Run != first.RunID {
+		t.Errorf("spec-keeper CarriedFrom = %+v, want %s", sk.CarriedFrom, first.RunID)
+	}
+	if arch, _ := plan3.Agent("architect"); arch.CarriedFrom != nil {
+		t.Errorf("architect should have re-ran when When threshold was reached, got CarriedFrom = %+v", arch.CarriedFrom)
+	}
+}
+
+func TestSelectiveCarry_WarnRunResolutionReRunsWarningAgentAndCarriesCleanAgents(t *testing.T) {
+	gatesYAML := `gates:
+  - agent: spec-keeper
+    paths: ["**"]
+    mode: gate
+  - agent: quality-reviewer
+    paths: ["**/*.go"]
+    mode: gate
+`
+	repo := setupScopedRepo(t, gatesYAML, []string{"spec-keeper", "quality-reviewer"})
+
+	// Run 1: 0 blockers, quality-reviewer has 1 medium warning, spec-keeper is clean -> WARN.
+	te1 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":      clean,
+		"quality-reviewer": `{"summary": "minor issue", "findings": [{"severity": "medium", "category": "readability", "title": "Rename var", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.8}]}`,
+	})
+	first := te1.run(t, Options{})
+	if first.Outcome != OutcomeWarn {
+		t.Fatalf("first outcome = %s, want WARN", first.Outcome)
+	}
+
+	// Commit 2: address the warning in a.go.
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { /* renamed */ }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "address warning")
+
+	// Run 2: spec-keeper (0 warnings in Run 1) is carried via Tier 2b;
+	// quality-reviewer (had warning in Run 1) re-runs and clears the warning -> PASS!
+	te2 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":      errors.New("spec-keeper must be carried via Tier 2b"),
+		"quality-reviewer": clean,
+	})
+	second := te2.run(t, Options{})
+	if second.Outcome != OutcomePass || te2.model.callCount() != 1 || te2.model.calls[0] != "quality-reviewer" {
+		t.Fatalf("second outcome = %s, calls = %v", second.Outcome, te2.model.calls)
+	}
+}
+
+func TestSelectiveCarry_MultiHopTransitiveAndBaseMerge(t *testing.T) {
+	gatesYAML := `gates:
+  - agent: spec-keeper
+    paths: ["**"]
+    mode: gate
+  - agent: prod-reviewer
+    paths: ["**/*.go", "!**/*_test.go"]
+    mode: gate
+  - agent: test-reviewer
+    paths: ["**/*_test.go"]
+    mode: gate
+`
+	repo := setupScopedRepo(t, gatesYAML, []string{"spec-keeper", "prod-reviewer", "test-reviewer"})
+	writeFile(t, filepath.Join(repo, "a_test.go"), "package a\n\nfunc TestA() {}\n")
+	gitIn(t, repo, "add", "a_test.go")
+	gitIn(t, repo, "commit", "-q", "-m", "add test")
+	h1 := headOf(t, repo)
+
+	// Run 1 on H1: spec-keeper clean, test-reviewer clean, prod-reviewer blocks on a.go.
+	te1 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":   clean,
+		"prod-reviewer": `{"summary": "bug", "findings": [{"severity": "high", "category": "correctness", "title": "Bug", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.9}]}`,
+		"test-reviewer": clean,
+	})
+	run1 := te1.run(t, Options{})
+	if run1.Outcome != OutcomeBlock {
+		t.Fatalf("run1 = %s", run1.Outcome)
+	}
+
+	// Commit H2: fix a.go, and also edit a_test.go introducing a blocker in a_test.go.
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { /* fixed */ }\n")
+	writeFile(t, filepath.Join(repo, "a_test.go"), "package a\n\nfunc TestA() { /* broken */ }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "fix prod, touch test")
+	h2 := headOf(t, repo)
+
+	// Run 2 on H2:
+	// - spec-keeper is carried from Run 1 (Tier 2b: Run 1 had blockers, spec-keeper had 0).
+	// - prod-reviewer re-runs (it had a blocker in Run 1) -> now clean on H2!
+	// - test-reviewer: wait, in Run 1 test-reviewer had 0 blockers, and test-reviewer has no When condition!
+	// Wait: why would test-reviewer re-run on H2 if Tier 2b applies to all gates without When?
+	// Let's check! In Run 2, test-reviewer had 0 blockers in Run 1, so Tier 2b carries test-reviewer too!
+	// Wait: what if prod-reviewer had a warning on H2 instead? Let's test that!
+	te2 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":   errors.New("spec-keeper carried from run1"),
+		"prod-reviewer": `{"summary": "warn", "findings": [{"severity": "medium", "category": "readability", "title": "Style", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.8}]}`,
+		"test-reviewer": errors.New("test-reviewer carried from run1"),
+	})
+	run2 := te2.run(t, Options{})
+	if run2.Outcome != OutcomeWarn || te2.model.callCount() != 1 {
+		t.Fatalf("run2 = %s, calls = %v", run2.Outcome, te2.model.calls)
+	}
+
+	// Commit H3: fix the warning in a.go.
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { /* clean style */ }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "fix style in a.go")
+	h3 := headOf(t, repo)
+
+	// Run 3 on H3:
+	// - spec-keeper and test-reviewer are carried transitively from Run 1 (H1)!
+	// - prod-reviewer re-runs on H3 and passes!
+	te3 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":   errors.New("spec-keeper carried from run1"),
+		"prod-reviewer": clean,
+		"test-reviewer": errors.New("test-reviewer carried from run1"),
+	})
+	run3 := te3.run(t, Options{})
+	if run3.Outcome != OutcomePass || te3.model.callCount() != 1 {
+		t.Fatalf("run3 = %s, calls = %v", run3.Outcome, te3.model.calls)
+	}
+	plan3, check3 := checkRun(t, repo, run3.RunDir)
+	if check3.Outcome != gate.Pass {
+		t.Fatalf("check3 = %+v", check3)
+	}
+	if sk, _ := plan3.Agent("spec-keeper"); sk.CarriedFrom == nil || sk.CarriedFrom.Run != run1.RunID || sk.CarriedFrom.Head != h1 {
+		t.Errorf("run3 spec-keeper CarriedFrom = %+v, want run1 (%s) at %s", sk.CarriedFrom, run1.RunID, h1)
+	}
+	if pr, _ := plan3.Agent("prod-reviewer"); pr.CarriedFrom != nil {
+		t.Errorf("run3 prod-reviewer CarriedFrom = %+v, want nil (ran on H3)", pr.CarriedFrom)
+	}
+	_ = h2
+
+	// Now merge main into feature (H4) without changing the branch diff:
+	// Full-run carry() carries Run 3 to H4 AND preserves per-agent CarriedFrom on spec-keeper & test-reviewer
+	// so `aspect gate check` (checkRun) validates every report against its respective origin range!
+	mergeMain(t, repo, "unrelated.txt", "main change\n")
+	te4 := newTestEngine(t, repo, nil)
+	run4 := te4.run(t, Options{})
+	if !run4.Cached || run4.CarriedFrom != run3.RunID || run4.Outcome != OutcomePass {
+		t.Fatalf("run4 = %+v", run4)
+	}
+	plan4, check4 := checkRun(t, repo, run4.RunDir)
+	if check4.Outcome != gate.Pass {
+		t.Fatalf("check4 after mergeMain on mixed-origin run failed: %+v", check4.Agents)
+	}
+	if plan4.CarriedFrom == nil || plan4.CarriedFrom.Head != h3 {
+		t.Errorf("plan4.CarriedFrom = %+v, want head %s", plan4.CarriedFrom, h3)
+	}
+	if sk, _ := plan4.Agent("spec-keeper"); sk.CarriedFrom == nil || sk.CarriedFrom.Head != h1 {
+		t.Errorf("plan4 spec-keeper CarriedFrom = %+v, want head %s", sk.CarriedFrom, h1)
+	}
+	if !strings.Contains(run4.Rendered, fmt.Sprintf("_Carried from run `%s` (`%s`)._", run1.RunID, h1[:12])) {
+		t.Errorf("run4.Rendered should preserve earlier origin note for spec-keeper:\n%s", run4.Rendered)
+	}
+}
+
+func TestSelectiveCarry_InvariantsAndInvalidation(t *testing.T) {
+	gatesYAML := `gates:
+  - agent: security-reviewer
+    paths: ["**/*.go"]
+    mode: gate
+  - agent: red-team
+    paths: ["**/*.go"]
+    mode: gate
+`
+	repo := setupScopedRepo(t, gatesYAML, []string{"security-reviewer", "red-team"})
+
+	// 1. Handoff target is never carried even when clean.
+	// In Run 1, security-reviewer has a blocker AND hands off to red-team; red-team has 0 findings.
+	te1 := newTestEngine(t, repo, map[string]any{
+		"security-reviewer": `{"summary": "blocker with handoff", "findings": [{"severity": "high", "category": "security", "title": "Auth", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.9}], "handoffs": [{"to": "red-team", "reason": "check exploitability"}]}`,
+		"red-team":          clean,
+	})
+	run1 := te1.run(t, Options{})
+	if run1.Outcome != OutcomeBlock {
+		t.Fatalf("run1 = %s", run1.Outcome)
+	}
+
+	// Commit 2: fix a.go. Because security-reviewer handed off to red-team in Run 1,
+	// red-team MUST NOT be carried via Tier 2b — both agents must re-run.
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { /* auth fixed */ }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "fix auth")
+
+	te2 := newTestEngine(t, repo, map[string]any{
+		"security-reviewer": `{"summary": "still blocked", "findings": [{"severity": "high", "category": "security", "title": "Auth 2", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.9}]}`,
+		"red-team":          clean,
+	})
+	run2 := te2.run(t, Options{})
+	if run2.Outcome != OutcomeBlock || te2.model.callCount() != 2 {
+		t.Fatalf("handoff target should not be carried: calls = %v", te2.model.calls)
+	}
+
+	// 2. Per-agent input hash invalidation:
+	// In Run 2, red-team had 0 blockers (and no handoff). Now we edit red-team.md AND fix a.go.
+	// Because red-team's agent definition changed, its agentInputHash changed, so red-team must re-run!
+	writeFile(t, filepath.Join(repo, ".claude/agents/red-team.md"), "---\nname: red-team\n---\nred-team\n\n### Extra\nupdated instructions\n")
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { /* auth 2 fixed */ }\n")
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "update red-team prompt and fix a.go")
+
+	te3 := newTestEngine(t, repo, map[string]any{
+		"security-reviewer": clean,
+		"red-team":          clean,
+	})
+	run3 := te3.run(t, Options{})
+	if run3.Outcome != OutcomePass || te3.model.callCount() != 2 {
+		t.Fatalf("changed agent definition must invalidate carry: calls = %v", te3.model.calls)
+	}
+}
+
+func TestRunDoesNotPerpetuallyCarryCleanAgentsFromCarriedWarning(t *testing.T) {
+	gatesYAML := `gates:
+  - agent: docs-reviewer
+    paths: ["docs/**"]
+    mode: gate
+  - agent: go-reviewer
+    paths: ["**/*.go"]
+    mode: gate
+  - agent: broad-reviewer
+    paths: ["**"]
+    mode: gate
+`
+	repo := setupScopedRepo(t, gatesYAML, []string{"docs-reviewer", "go-reviewer", "broad-reviewer"})
+	writeFile(t, filepath.Join(repo, "docs/guide.md"), "# Guide\n")
+	gitIn(t, repo, "add", "docs/guide.md")
+	gitIn(t, repo, "commit", "-q", "-m", "add docs")
+
+	// Run 1: go-reviewer blocks on a.go; docs-reviewer has a warning on docs/guide.md;
+	// broad-reviewer has a warning on a.go.
+	te1 := newTestEngine(t, repo, map[string]any{
+		"docs-reviewer":  `{"summary": "warn docs", "findings": [{"severity": "medium", "category": "docs", "title": "Typo", "location": {"file": "docs/guide.md", "line": 1}, "evidence": "e", "recommendation": "r", "confidence": 0.8}]}`,
+		"go-reviewer":    `{"summary": "block go", "findings": [{"severity": "high", "category": "correctness", "title": "Bug", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.9}]}`,
+		"broad-reviewer": `{"summary": "warn broad", "findings": [{"severity": "low", "category": "readability", "title": "Nit", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.8}]}`,
+	})
+	run1 := te1.run(t, Options{})
+	if run1.Outcome != OutcomeBlock {
+		t.Fatalf("run1 = %s, want BLOCK", run1.Outcome)
+	}
+
+	// Commit 2: fix a.go only (docs/guide.md is untouched).
+	// - docs-reviewer is carried via Tier 1 (its scoped diff on docs/** is identical).
+	// - go-reviewer must re-run (had blocker).
+	// - broad-reviewer must ALSO re-run (it had a warning and its scoped diff changed, so Tier 2b must not carry it!).
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { /* fixed bug and nit */ }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "fix bug and nit")
+
+	te2 := newTestEngine(t, repo, map[string]any{
+		"docs-reviewer":  errors.New("docs-reviewer must be carried via Tier 1"),
+		"go-reviewer":    clean,
+		"broad-reviewer": clean,
+	})
+	run2 := te2.run(t, Options{})
+	// Run 2 has OutcomeWarn because docs-reviewer's warning was carried via Tier 1,
+	// while both freshly-run agents (go-reviewer and broad-reviewer) reported 0 findings!
+	if run2.Outcome != OutcomeWarn || te2.model.callCount() != 2 {
+		t.Fatalf("run2 = %s, calls = %v (want go-reviewer and broad-reviewer)", run2.Outcome, te2.model.calls)
+	}
+
+	// Commit 3: new edit to a.go.
+	// Even though Run 2 had OutcomeWarn, that warning came from a CARRIED agent (docs-reviewer),
+	// NOT a freshly-run agent in Run 2! Therefore Run 3 must NOT treat Run 2 as having fresh warnings
+	// for Tier 2b — both go-reviewer and broad-reviewer must re-run on Commit 3!
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { /* new feature work */ }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "new feature work in a.go")
+
+	te3 := newTestEngine(t, repo, map[string]any{
+		"docs-reviewer":  errors.New("docs-reviewer still carried via Tier 1"),
+		"go-reviewer":    clean,
+		"broad-reviewer": clean,
+	})
+	run3 := te3.run(t, Options{})
+	if run3.Outcome != OutcomeWarn || te3.model.callCount() != 2 {
+		t.Fatalf("carried warning in run2 must not enable Tier 2b in run3: calls = %v", te3.model.calls)
+	}
+}
+
+func TestRunDoesNotCarryTier2bWhenNewFileAdded(t *testing.T) {
+	gatesYAML := `gates:
+  - agent: spec-keeper
+    paths: ["**"]
+    mode: gate
+  - agent: go-reviewer
+    paths: ["**/*.go"]
+    mode: gate
+`
+	repo := setupScopedRepo(t, gatesYAML, []string{"spec-keeper", "go-reviewer"})
+
+	// Run 1: go-reviewer blocks on a.go; spec-keeper is clean.
+	te1 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper": clean,
+		"go-reviewer": `{"summary": "bug", "findings": [{"severity": "high", "category": "correctness", "title": "Bug", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.9}]}`,
+	})
+	run1 := te1.run(t, Options{})
+	if run1.Outcome != OutcomeBlock {
+		t.Fatalf("run1 = %s", run1.Outcome)
+	}
+
+	// Commit 2: fix a.go AND add a brand-new file b.go.
+	// Because b.go was not in spec-keeper's Files in Run 1, Tier 2b must NOT carry spec-keeper!
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { B() }\n")
+	writeFile(t, filepath.Join(repo, "b.go"), "package a\n\nfunc B() {}\n")
+	gitIn(t, repo, "add", "a.go", "b.go")
+	gitIn(t, repo, "commit", "-q", "-m", "fix a.go and add b.go")
+
+	te2 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper": clean,
+		"go-reviewer": clean,
+	})
+	run2 := te2.run(t, Options{})
+	if run2.Outcome != OutcomePass || te2.model.callCount() != 2 {
+		t.Fatalf("adding a new file must prevent Tier 2b carry: calls = %v", te2.model.calls)
+	}
+}
+
+func TestTier1DoesNotMatchUnreviewedTier2bDiffHash(t *testing.T) {
+	gatesYAML := `gates:
+  - agent: spec-keeper
+    paths: ["**/*.go"]
+    mode: gate
+  - agent: adversarial-reviewer
+    paths: ["**/*.go"]
+    mode: gate
+  - agent: docs-reviewer
+    paths: ["docs/**"]
+    mode: gate
+`
+	repo := setupScopedRepo(t, gatesYAML, []string{"spec-keeper", "adversarial-reviewer", "docs-reviewer"})
+	writeFile(t, filepath.Join(repo, "docs/guide.md"), "# Guide\n")
+	gitIn(t, repo, "add", "docs/guide.md")
+	gitIn(t, repo, "commit", "-q", "-m", "add docs")
+
+	// Run 1 on H1: adversarial-reviewer blocks on a.go; spec-keeper and docs-reviewer pass.
+	te1 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":          clean,
+		"adversarial-reviewer": `{"summary": "bug", "findings": [{"severity": "high", "category": "correctness", "title": "Bug", "location": {"file": "a.go", "line": 3}, "evidence": "e", "recommendation": "r", "confidence": 0.9}]}`,
+		"docs-reviewer":        clean,
+	})
+	run1 := te1.run(t, Options{})
+	if run1.Outcome != OutcomeBlock {
+		t.Fatalf("run1 = %s", run1.Outcome)
+	}
+
+	// Commit H2: modify a.go to fix the blocker.
+	// Run 2 carries spec-keeper via Tier 2b (so spec-keeper has still only reviewed H1's a.go, not H2's a.go),
+	// carries docs-reviewer via Tier 1, and re-runs adversarial-reviewer -> PASS.
+	writeFile(t, filepath.Join(repo, "a.go"), "package a\n\nfunc A() { /* fixed on H2 */ }\n")
+	gitIn(t, repo, "commit", "-q", "-am", "fix a.go on H2")
+
+	te2 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":          errors.New("spec-keeper carried via Tier 2b"),
+		"adversarial-reviewer": clean,
+		"docs-reviewer":        errors.New("docs-reviewer carried via Tier 1"),
+	})
+	run2 := te2.run(t, Options{})
+	if run2.Outcome != OutcomePass || te2.model.callCount() != 1 {
+		t.Fatalf("run2 = %s, calls = %v", run2.Outcome, te2.model.calls)
+	}
+
+	// Commit H3: modify docs/guide.md after a clean PASS.
+	// On H3, adversarial-reviewer reviewed H2's a.go (so Tier 1 carries adversarial-reviewer),
+	// but spec-keeper only ever reviewed H1's a.go (it skipped H1..H2 via Tier 2b, and inputs.hash
+	// preserved H1's diff hash for spec-keeper). Because Run 2 was a clean PASS, Tier 2b is no longer
+	// active in Run 3, and Tier 1 must NOT falsely match H2's unreviewed diff hash for spec-keeper!
+	writeFile(t, filepath.Join(repo, "docs/guide.md"), "# Updated Guide\n")
+	gitIn(t, repo, "commit", "-q", "-am", "update docs on H3")
+
+	te3 := newTestEngine(t, repo, map[string]any{
+		"spec-keeper":          clean,
+		"adversarial-reviewer": errors.New("adversarial-reviewer reviewed H2 and must be carried via Tier 1"),
+		"docs-reviewer":        clean,
+	})
+	run3 := te3.run(t, Options{})
+	if run3.Outcome != OutcomePass || te3.model.callCount() != 2 {
+		t.Fatalf("run3 = %s, calls = %v (want spec-keeper and docs-reviewer)", run3.Outcome, te3.model.calls)
+	}
+}

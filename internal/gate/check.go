@@ -29,16 +29,17 @@ type Result struct {
 
 // AgentResult is one planned agent's report and what it contributes.
 type AgentResult struct {
-	Agent    string    `json:"agent"`
-	Mode     string    `json:"mode"`
-	Status   string    `json:"status"`
-	Error    string    `json:"error,omitempty"`
-	Summary  string    `json:"summary,omitempty"`
-	Blocking []Finding `json:"blocking"`
-	Warnings []Finding `json:"warnings"`
-	Info     []Finding `json:"info"`
-	Handoffs []Handoff `json:"handoffs"`
-	ADRs     []ADR     `json:"adrs,omitempty"`
+	Agent       string    `json:"agent"`
+	Mode        string    `json:"mode"`
+	Status      string    `json:"status"`
+	Error       string    `json:"error,omitempty"`
+	Summary     string    `json:"summary,omitempty"`
+	CarriedFrom *Carried  `json:"carried_from,omitempty"`
+	Blocking    []Finding `json:"blocking"`
+	Warnings    []Finding `json:"warnings"`
+	Info        []Finding `json:"info"`
+	Handoffs    []Handoff `json:"handoffs"`
+	ADRs        []ADR     `json:"adrs,omitempty"`
 }
 
 // Input is one agent's report as found on disk: the bytes, or the error
@@ -61,7 +62,7 @@ func Check(c *Config, p *Plan, reports map[string]Input, override bool) *Result 
 		}
 	}
 	for _, pl := range p.Agents {
-		ar := AgentResult{Agent: pl.Agent, Mode: pl.Mode, Blocking: []Finding{}, Warnings: []Finding{}, Info: []Finding{}, Handoffs: []Handoff{}}
+		ar := AgentResult{Agent: pl.Agent, Mode: pl.Mode, CarriedFrom: pl.CarriedFrom, Blocking: []Finding{}, Warnings: []Finding{}, Info: []Finding{}, Handoffs: []Handoff{}}
 		failed := func(status, msg string) {
 			ar.Status, ar.Error = status, msg
 			if pl.Mode == "gate" {
@@ -85,7 +86,7 @@ func Check(c *Config, p *Plan, reports map[string]Input, override bool) *Result 
 				failed(StatusInvalid, fmt.Sprintf("report is from agent %q", r.Agent))
 			case r.Mode != pl.Mode:
 				failed(StatusInvalid, fmt.Sprintf("report mode %q, planned %q", r.Mode, pl.Mode))
-			case !p.reviews(r.Base, r.Head):
+			case !pl.reviews(p, r.Base, r.Head):
 				failed(StatusInvalid, fmt.Sprintf("report reviews %s...%s, planned %s...%s", r.Base, r.Head, p.Base, p.Head))
 			default:
 				ar.Status, ar.Summary, ar.Handoffs, ar.ADRs = StatusOK, r.Summary, append(ar.Handoffs, r.Handoffs...), r.ADRs

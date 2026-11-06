@@ -196,6 +196,11 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		}
 	}
 
+	var carriedAgents map[string]carriedAgent
+	if !opt.Force && opt.Agent == "" && len(plan.Agents) > 0 {
+		carriedAgents = e.findCarriedAgents(ctx, repo, cfg, plan, diff, inputsHash, specOf)
+	}
+
 	runID, dir, err := e.newRunDir(repo, prefix)
 	if err != nil {
 		return nil, err
@@ -203,11 +208,26 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	if opt.Started != nil {
 		opt.Started(runID)
 	}
+	for i := range plan.Agents {
+		name := plan.Agents[i].Agent
+		ca, ok := carriedAgents[name]
+		if !ok {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), ca.rawReport, 0o644); err != nil {
+			delete(carriedAgents, name)
+			if carryErr == "" {
+				carryErr = describe(err)
+			}
+			continue
+		}
+		plan.Agents[i].CarriedFrom = ca.origin
+	}
 	if err := writeJSON(filepath.Join(dir, "plan.json"), plan); err != nil {
 		return nil, err
 	}
 	_ = os.WriteFile(filepath.Join(dir, "diff.hash"), []byte(diffHash), 0o644)
-	_ = os.WriteFile(filepath.Join(dir, inputsHashFile), []byte(inputsHash), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, inputsHashFile), []byte(e.buildInputsHashFile(ctx, repo, cfg, plan, diff, inputsHash, specOf, carriedAgents)), 0o644)
 
 	st := &runStatus{
 		dir: dir, runID: runID, baseRef: base, headRef: head, baseSHA: plan.Base, headSHA: plan.Head,
@@ -215,9 +235,13 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		agents: map[string]*agentStatus{}, startedAt: e.now(), now: e.now, notCurrent: opt.Agent != "",
 	}
 	st.update(func() {
+		now := e.now()
 		for _, a := range plan.Agents {
 			s := st.agent(a.Agent)
 			s.mode, s.files = a.Mode, a.Files
+			if ca, ok := carriedAgents[a.Agent]; ok {
+				s.applyCarried(ca.report, ca.origin, now)
+			}
 		}
 	})
 	res := &Result{RunID: runID, RunDir: dir, PR: pr.Number, PRURL: pr.URL, Plan: plan, CarryError: carryErr}
@@ -241,6 +265,9 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	}
 	var wg sync.WaitGroup
 	for _, a := range plan.Agents {
+		if _, ok := carriedAgents[a.Agent]; ok {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -262,6 +289,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		CompletionTokens: u.CompletionTokens,
 		TotalTokens:      u.TotalTokens,
 		Duration:         duration,
+		Reused:           len(plan.Agents) > 0 && len(carriedAgents) == len(plan.Agents),
 	}
 
 	check, rendered := e.check(cfg, plan, dir, usageSummary)

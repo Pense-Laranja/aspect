@@ -52,6 +52,8 @@ func Render(c *Config, p *Plan, r *Result, opt RenderOptions) string {
 		fmt.Fprintf(&b, "**Verdict carried** from run `%s`, which judged `%s`: this head's diff against its merge base is the same, byte for byte, "+
 			"and so are the agents' definitions and the spec they were shown; only the base moved. No agent ran on this head.\n\n",
 			inline(c.Run), short(c.Head))
+	} else if note := renderCarriedAgentsNote(r.Agents); note != "" {
+		b.WriteString(note + "\n\n")
 	}
 	if len(r.Agents) == 0 {
 		b.WriteString("No gate applies to this change.\n")
@@ -67,6 +69,9 @@ func Render(c *Config, p *Plan, r *Result, opt RenderOptions) string {
 		if a.Status != StatusOK {
 			fmt.Fprintf(&b, "Report %s: %s\n", a.Status, inline(a.Error))
 			continue
+		}
+		if a.CarriedFrom != nil && (p.CarriedFrom == nil || a.CarriedFrom.Run != p.CarriedFrom.Run || !SameRev(a.CarriedFrom.Head, p.CarriedFrom.Head)) {
+			fmt.Fprintf(&b, "_Carried from run `%s` (`%s`)._\n\n", inline(a.CarriedFrom.Run), short(a.CarriedFrom.Head))
 		}
 		b.WriteString(inline(a.Summary) + "\n")
 		for _, group := range []struct {
@@ -102,6 +107,24 @@ func Render(c *Config, p *Plan, r *Result, opt RenderOptions) string {
 	}
 	renderUsageFooter(&b, opt.Usage)
 	return b.String()
+}
+
+func renderCarriedAgentsNote(agents []AgentResult) string {
+	var carried, ran []string
+	for _, a := range agents {
+		if c := a.CarriedFrom; c != nil {
+			carried = append(carried, fmt.Sprintf("`%s` (from `%s` at `%s`)", inline(a.Agent), inline(c.Run), short(c.Head)))
+		} else {
+			ran = append(ran, "`"+inline(a.Agent)+"`")
+		}
+	}
+	if len(carried) == 0 {
+		return ""
+	}
+	if len(ran) == 0 {
+		return "**Carried from earlier review:** " + strings.Join(carried, ", ") + "; no agent needed to re-run on this head."
+	}
+	return "**Carried from earlier review:** " + strings.Join(carried, ", ") + "; re-ran " + strings.Join(ran, ", ") + " on this head."
 }
 
 func renderUsageFooter(b *strings.Builder, u *UsageSummary) {

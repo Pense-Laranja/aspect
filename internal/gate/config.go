@@ -167,12 +167,43 @@ func (c *Config) ResolveSpec(exists func(path string) bool) string {
 	return NoSpec
 }
 
-// gateFor returns the configured gate for an agent.
-func (c *Config) gateFor(agent string) (Gate, bool) {
+// GateFor returns the configured gate for an agent.
+func (c *Config) GateFor(agent string) (Gate, bool) {
 	for _, g := range c.Gates {
 		if g.Agent == agent {
 			return g, true
 		}
 	}
 	return Gate{}, false
+}
+
+// MatchesPath reports whether path matches the gate's paths patterns
+// (including negated patterns).
+func (g Gate) MatchesPath(path string) bool {
+	return matchAny(g.Paths, path)
+}
+
+// MatchesWhen reports whether changes (restricted to files matching
+// g.Paths) satisfy g.When. It returns false when g.When is nil.
+func (g Gate) MatchesWhen(changes []Change) bool {
+	if g.When == nil {
+		return false
+	}
+	var files []string
+	lines := 0
+	for _, ch := range changes {
+		if matchAny(g.Paths, ch.Path) {
+			files = append(files, ch.Path)
+			lines += ch.Added + ch.Deleted
+		}
+	}
+	if len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		if matchAny(g.When.OrTouches, f) {
+			return true
+		}
+	}
+	return g.When.MinChangedLines > 0 && lines >= g.When.MinChangedLines
 }
