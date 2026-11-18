@@ -88,25 +88,28 @@ func (a *agentStatus) applyCarried(rep *Report, origin *gate.Carried, now time.T
 // runStatus is a run's progress, kept in .review/<run-id>/status.json and
 // rewritten at every change so a dashboard can follow it.
 type runStatus struct {
-	mu         sync.Mutex
-	dir        string // .review/<run-id>
-	runID      string
-	baseRef    string
-	headRef    string
-	baseSHA    string
-	headSHA    string
-	branch     string
-	diffHash   string
-	pr, prURL  string
-	state      string
-	outcome    string
-	errMsg     string
-	published  string
-	agents     map[string]*agentStatus
-	order      []string
-	startedAt  time.Time
-	finishedAt time.Time
-	usage      Usage
+	mu               sync.Mutex
+	dir              string // .review/<run-id>
+	runID            string
+	baseRef          string
+	headRef          string
+	baseSHA          string
+	headSHA          string
+	branch           string
+	diffHash         string
+	pr, prURL        string
+	state            string
+	defaultEngine    string
+	outcome          string
+	errMsg           string
+	published        string
+	publishAttempted bool
+	publishOK        bool
+	agents           map[string]*agentStatus
+	order            []string
+	startedAt        time.Time
+	finishedAt       time.Time
+	usage            Usage
 	// runUsage is what the run paid beyond its agents' requests: the
 	// context caches' writing and storage.
 	runUsage Usage
@@ -184,7 +187,7 @@ func (r *runStatus) engine() string {
 		u.add(usage{Engine: r.agents[name].engine})
 	}
 	if u.Engine == "" {
-		return "gemini"
+		return firstNonEmpty(r.defaultEngine, "gemini")
 	}
 	return u.Engine
 }
@@ -280,14 +283,33 @@ func (r *runStatus) failed(name, msg string) {
 	})
 }
 
+// previewOutcome returns the final outcome finish would record for outcome
+// given the current agent states, without mutating or saving status.json.
+func (r *runStatus) previewOutcome(outcome string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	completed, _, _, _, _ := r.counts()
+	if (len(r.agents) > 0 && completed == 0) || r.gatesMissing() {
+		return worstOutcome(OutcomeError, outcome, r.computeOutcome())
+	}
+	return worstOutcome(outcome, r.computeOutcome())
+}
+
 // finish records the run as ended. The outcome is the worse of the one
 // given (aspect's verdict) and what the agents support, so a gate agent
 // without a report turns a PASS into ERROR.
 func (r *runStatus) finish(outcome, published string) string {
+	return r.finishWithPublish(outcome, published, published != "", published != "")
+}
+
+func (r *runStatus) finishWithPublish(outcome, published string, publishAttempted, publishOK bool) string {
 	r.update(func() {
 		r.state = stateCompleted
 		r.finishedAt = r.now()
 		completed, _, _, _, u := r.counts()
+		if u.Engine == "" && r.defaultEngine != "" {
+			u.Engine = r.defaultEngine
+		}
 		if !r.startedAt.IsZero() && !r.finishedAt.IsZero() {
 			u.Duration = r.finishedAt.Sub(r.startedAt)
 		}
@@ -298,6 +320,8 @@ func (r *runStatus) finish(outcome, published string) string {
 			r.outcome = worstOutcome(outcome, r.computeOutcome())
 		}
 		r.published = published
+		r.publishAttempted = publishAttempted
+		r.publishOK = publishOK
 	})
 	return r.outcome
 }
@@ -478,6 +502,9 @@ func (r *runStatus) document() *Object {
 	d.Set("completed_agents", completed)
 	d.Set("total_agents", total)
 	d.Set("published_status", nullable(r.published))
+	if r.publishAttempted {
+		d.Set("publish_ok", r.publishOK)
+	}
 	d.Set("agents", agents)
 	if all == nil {
 		all = []any{}

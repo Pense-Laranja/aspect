@@ -232,11 +232,17 @@ aspect gate extract -o .review/run/<agent>.json -agent <agent> -mode <mode> -bas
 
 ### Review Engines & Providers
 
-Aspect review gates can be executed via three environments:
+Aspect review gates can be executed via four environments:
 
-1. **Gemini review engine (`aspect review`):**
+1. **Antigravity Flash workflow (`.agents/skills/aspect-review`, no API key required):**
+   Runs every applicable review gate agent on Antigravity's built-in Gemini Flash model using Antigravity credits via `run_workflow`:
+   - `aspect review prepare -repo . -base origin/main -json` resolves diffs, committed spec excerpts, full-run reuse, base-merge carry, and Tier 1/Tier 2 selective agent carry without calling an external API, writing prompt bundles under `.review/<run-id>/prompts/` and `.review/<run-id>/manifest.json`.
+   - `.agents/skills/aspect-review/scripts/review_workflow.py` dispatches pending tasks in bounded parallel batches to the zero-tool `aspect_gate_reviewer` subagent (`model="flash"`) with a closed inline JSON schema.
+   - `aspect review finalize .review/<run-id> -repo . [-publish]` merges multi-part outputs, normalizes reports into `aspect-review/v1`, runs `gate.Check`, writes `status.json` and `rendered.md`, and exits 0 on pass/warn, 1 on block, or 2 when there is no verdict.
+   - Single-agent isolated runs are supported via `-agent <name>` on `aspect review` and `aspect review prepare` (stored under `.review/agent-<time>`, never cached, published, or set as `current_run.json`).
+2. **Gemini review engine (`aspect review`):**
    Runs every applicable agent on Google Gemini (`gemini-flash-latest`, or `GEMINI_MODEL`) and gates the change in one command:
-   - `aspect review -repo . -base origin/main [-publish]` exits 0 on pass or warn, 1 when the gates block, 2 when there is no verdict.
+   - `aspect review -repo . -base origin/main [-publish] [-agent <name>]` exits 0 on pass or warn, 1 when the gates block, 2 when there is no verdict.
    - The run is `.review/<run-id>/` (plan, reports, `status.json`), and an unchanged diff reuses its finished run instead of paying for the review again. So does a branch that only merged its base in, cleanly: when the diff against the new merge base is byte for byte the reviewed one and the agents' definitions and the spec they are shown are unchanged (`inputs.hash`), the verdict is carried to the new head as a run of its own (`carried_from` in `plan.json` and `status.json`, and a line in the rendered result), so the record on the pull request names the head it is for.
    - Credentials come from `GEMINI_API_KEY` or `GOOGLE_API_KEY`; the `CODE_REVIEWER_*` variables tune timeouts, retries, concurrency and the prompt budget (`internal/review/config.go`).
    - Each reviewer is shown the system's constraints and the rules of the modules its files belong to (constraints, invariants, operations, scenarios, brief), within `CODE_REVIEWER_SPEC_BUDGET` tokens (30000; 0 shows none): a rule written in the spec is checked on every change to its module. Only files committed at the change's head are shown, and the result says when the reviewers saw less of the spec than it holds. `aspect context _aspect/aspect.yaml <file|dir|module>...` prints the same text, for a person or a coding assistant about to edit that code.
@@ -251,9 +257,9 @@ Aspect review gates can be executed via three environments:
        "env": {"CODE_REVIEWER_DEFAULT_REPO": "/path/to/repository"}
      }
      ```
-2. **Claude Code (Interactive CLI):**
+3. **Claude Code (Interactive CLI):**
    Runs interactively inside Claude Code via the `/review` command or `.claude/review/run.sh`.
-3. **Gemini CLI / Headless CI:**
+4. **Gemini CLI / Headless CI:**
    Runs headlessly via `.claude/review/gemini-policy.toml` or CI workflow (`REVIEW_GATES_PROVIDER=gemini`).
 
 When the spec keeper finds drift, the `review-gates/update-spec` label on the PR runs it in author mode (`.github/workflows/spec-update.yml`): its edits to `_aspect/` come back as a PR into the PR's branch, for a human to merge.

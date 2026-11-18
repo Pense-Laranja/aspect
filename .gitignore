@@ -30,3 +30,7 @@ coverage.*
 # Review gate runs (reports, transcripts, scratch)
 .review/
 mysqldump.sql.gz
+
+# Python bytecode
+__pycache__/
+*.py[cod]

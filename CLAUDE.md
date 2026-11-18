@@ -19,10 +19,10 @@ whether the result achieves the spec's stated goals. Go module
 - `internal/gate` — review gates: which agents apply to a diff, report validation, pass/warn/block, PR comment. Pure Go, no model, no git.
 - `internal/gitx` — git for the commands that read a repository: the gate plan of a change, shared by `aspect gate plan` and `aspect review`.
 - `internal/speccontext` — what the spec says about some modules, as budgeted Markdown: the text `aspect review` puts in each reviewer's prompt and `aspect context` prints.
-- `internal/review` — the review engine behind `aspect review`: runs the planned agents on Gemini, normalizes their reports, records the run in `.review/<run-id>/`, and gates with `internal/gate`. It replaced CodeReviewer (Python); keep its run files, `CODE_REVIEWER_*` variables and exit codes, which repositories' scripts read.
-- `cmd/aspect` — CLI: `validate`, `expand`, `split`, `plan`, `run`, `drift`, `paths`, `briefs`, `context`, `inventory`, `import`, `gate`, `review`, and `mcp`, the review engine served over MCP (stdio) under the tool names the Python CodeReviewer's server used.
+- `internal/review` — the review engine behind `aspect review`: runs the planned agents on Gemini (`Engine.Run`) or prepares/finalizes stateless prompt bundles for external runners such as Antigravity Flash workflows (`Engine.Prepare` / `Engine.Finalize`), normalizes their reports, records the run in `.review/<run-id>/`, and gates with `internal/gate`. It replaced CodeReviewer (Python); keep its run files, `CODE_REVIEWER_*` variables and exit codes, which repositories' scripts read.
+- `cmd/aspect` — CLI: `validate`, `expand`, `split`, `plan`, `run`, `drift`, `paths`, `briefs`, `context`, `inventory`, `import`, `gate`, `review` (`prepare`, `finalize`, `status`, `findings`, `compare`, `runs`, `-agent`), and `mcp`, the review engine served over MCP (stdio) under the tool names the Python CodeReviewer's server used.
 - `.claude/agents`, `.claude/review`, `.claude/commands` — the review agents, their shared protocol, report schema and `gates.yaml`, and the `/review` and `/implement` commands. See `docs/design.md`.
-- `.agents/` — Antigravity multi-agent suite: `aspect_developer` orchestrator, `aspect_designer`, `aspect_coder`, and validation review subagents with GitHub PR management.
+- `.agents/` — Antigravity multi-agent suite: `aspect_developer` orchestrator, `aspect_designer`, `aspect_coder`, `aspect_gate_reviewer`, Flash validation review subagents, and `.agents/skills/aspect-review` (`run_workflow` orchestration for running review gates on Antigravity Flash credits without `GEMINI_API_KEY`).
 - `examples/` — reference specs; CI validates them.
 - `docs/` — architecture and spec format.
 

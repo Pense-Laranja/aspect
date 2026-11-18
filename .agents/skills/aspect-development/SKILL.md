@@ -70,14 +70,16 @@ Invoke `aspect_plan_director`:
 - Confirm that **all test scenarios, edge cases, and failure modes in the test plan were tested** and are passing.
 - Any incomplete step or missing test returns `BLOCK` and must be remediated before review gates.
 
-## Step 5: Multi-Agent Validation
-Invoke the review subagents:
-- `test_evaluator`: evaluates test design, verifies functional test presence, unit test coverage adequacy, test efficiency, and quality guarantees.
-- `adversarial_reviewer`: hunts for crashes, concurrency races, off-by-one errors.
-- `spec_keeper`: checks spec alignment and drift.
-- `quality_reviewer`: checks error handling and resource cleanup.
-- `security_reviewer`: audits for input validation and path safety.
-- `test_adequacy_reviewer`: confirms non-flaky test coverage for all new paths.
+## Step 5: Multi-Agent Validation & Flash Review Gates
+Invoke the review subagents with `Model="flash"` so validation executes on Antigravity Flash credits:
+- `test_evaluator` (`Model="flash"`): evaluates test design, verifies functional test presence, unit test coverage adequacy, test efficiency, and quality guarantees.
+- `adversarial_reviewer` (`Model="flash"`): hunts for crashes, concurrency races, off-by-one errors.
+- `spec_keeper` (`Model="flash"`): checks spec alignment and drift.
+- `quality_reviewer` (`Model="flash"`): checks error handling and resource cleanup.
+- `security_reviewer` (`Model="flash"`): audits for input validation and path safety.
+- `test_adequacy_reviewer` (`Model="flash"`): confirms non-flaky test coverage for all new paths.
+
+When running full Aspect review gates (`.claude/review/gates.yaml`) in Antigravity, use the `aspect-review` skill (`run_workflow` with `.agents/skills/aspect-review/scripts/review_workflow.py`), which runs `aspect review prepare`, dispatches stateless `aspect_gate_reviewer` Flash tasks on Antigravity credits, and finalizes via `aspect review finalize` without requiring `GEMINI_API_KEY`.
 
 ## Step 6: Remediation Loop
 If any finding has severity `critical`, `high`, or test coverage is inadequate:

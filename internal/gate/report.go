@@ -281,3 +281,124 @@ func AgentText(raw []byte) string {
 	}
 	return string(raw)
 }
+
+// ReviewerOutputSchema returns a closed inline JSON Schema for the un-stamped
+// report payload an LLM reviewer emits (before review.Normalize stamps schema,
+// agent, mode, base, head, and changes). Every object sets
+// additionalProperties: false, and no $ref, $defs, definitions, if/then/else,
+// or allOf/anyOf/oneOf keywords are used so external structured-output runners
+// (such as Antigravity's run_workflow agent(..., schema=...)) accept it.
+func ReviewerOutputSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"summary", "findings", "handoffs"},
+		"properties": map[string]any{
+			"summary": map[string]any{
+				"type": "string",
+			},
+			"findings": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required": []string{
+						"id",
+						"severity",
+						"category",
+						"title",
+						"location",
+						"evidence",
+						"recommendation",
+						"confidence",
+					},
+					"properties": map[string]any{
+						"id": map[string]any{
+							"type": "string",
+						},
+						"severity": map[string]any{
+							"type": "string",
+							"enum": slices.Clone(Severities),
+						},
+						"category": map[string]any{
+							"type": "string",
+							"enum": slices.Clone(Categories),
+						},
+						"title": map[string]any{
+							"type": "string",
+						},
+						"location": map[string]any{
+							"type":                 "object",
+							"additionalProperties": false,
+							"required":             []string{"file"},
+							"properties": map[string]any{
+								"file": map[string]any{
+									"type": "string",
+								},
+								"line": map[string]any{
+									"type": "integer",
+								},
+								"end_line": map[string]any{
+									"type": "integer",
+								},
+							},
+						},
+						"spec_ref": map[string]any{
+							"type": "string",
+						},
+						"evidence": map[string]any{
+							"type": "string",
+						},
+						"reproduction": map[string]any{
+							"type": "string",
+						},
+						"recommendation": map[string]any{
+							"type": "string",
+						},
+						"confidence": map[string]any{
+							"type": "number",
+						},
+					},
+				},
+			},
+			"handoffs": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []string{"to", "reason"},
+					"properties": map[string]any{
+						"to": map[string]any{
+							"type": "string",
+						},
+						"reason": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+			},
+			"adrs": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []string{"slug", "title", "body"},
+					"properties": map[string]any{
+						"slug": map[string]any{
+							"type": "string",
+						},
+						"title": map[string]any{
+							"type": "string",
+						},
+						"finding": map[string]any{
+							"type": "string",
+						},
+						"body": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+			},
+		},
+	}
+}
