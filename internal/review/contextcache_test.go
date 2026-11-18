@@ -193,7 +193,7 @@ func TestSharedPrefixIsCachedOnceAndReadByEachRequest(t *testing.T) {
 	// Each request is billed its cached tokens at the cached rate and its
 	// thinking at the output rate; the cache's writing on top, once.
 	for i, u := range us[:3] {
-		price, _, _ := llm.LookupGeminiPrice("gemini-3.8-flash", time.Now(), 0)
+		price, _, _ := llm.LookupGeminiPrice("gemini-3.8-flash", time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC), 0)
 		want := price.Cost(u.PromptTokens, u.CachedTokens, 100, 1000)
 		if u.CachedTokens == 0 || u.ThoughtsTokens != 1000 || u.CostUSD != want || u.Model != "gemini-3.8-flash" {
 			t.Errorf("request %d: usage %+v, want cost %v", i, u, want)
