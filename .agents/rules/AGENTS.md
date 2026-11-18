@@ -12,7 +12,8 @@ When developing in this repository or implementing Aspect changes:
    - Detailed blueprint and invariant planning is performed by the design sub-agent (`aspect_designer`).
    - Implementation and test coding is performed collaboratively by the developer sub-agent (`aspect_coder`) and test designer sub-agent (`aspect_test_designer`).
    - Plan conformance and completeness is audited by the plan director (`aspect_plan_director`), verifying the plan has been followed to the dot and all steps are concluded and tested.
-   - Independent validation is performed by dedicated review subagents (`test_evaluator`, `adversarial_reviewer`, `spec_keeper`, `quality_reviewer`, `security_reviewer`, `test_adequacy_reviewer`).
+   - Independent validation is performed by dedicated review subagents (`test_evaluator`, `adversarial_reviewer`, `spec_keeper`, `quality_reviewer`, `security_reviewer`, `test_adequacy_reviewer`), invoked with `Model="flash"` in Antigravity.
+   - Full repository review gates (`.claude/review/gates.yaml`) run in Antigravity via the `aspect-review` skill (`run_workflow` on Flash models using Antigravity credits, backed by `aspect review prepare` and `aspect review finalize`) without requiring `GEMINI_API_KEY`.
    - An author never reviews their own work; validation agents evaluate the change objectively.
 
 3. **Mandatory Verification**:

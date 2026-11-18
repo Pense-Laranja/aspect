@@ -131,6 +131,23 @@ func TestParseConfigRejects(t *testing.T) {
 	}
 }
 
+func TestParseConfigRejectsUnsafeAgentName(t *testing.T) {
+	unsafeNames := []string{
+		"../evil",
+		"a/b",
+		`a\b`,
+		".hidden",
+		".",
+		"..",
+	}
+	for _, name := range unsafeNames {
+		y := "gates:\n  - agent: " + `"` + strings.ReplaceAll(name, `\`, `\\`) + `"` + "\n    paths: ['**']\n    mode: gate\n"
+		if _, err := ParseConfig([]byte(y)); err == nil {
+			t.Errorf("ParseConfig accepted unsafe agent name %q", name)
+		}
+	}
+}
+
 func TestParseConfigDefaults(t *testing.T) {
 	c, err := ParseConfig([]byte("gates: [{agent: a, paths: ['**'], mode: gate}]"))
 	if err != nil {

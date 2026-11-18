@@ -39,6 +39,27 @@ func TestOutcomeLineFormatting(t *testing.T) {
 			want:    "Aspect gate outcome: PASS",
 		},
 		{
+			name:    "gemini engine with zero usage produces plain outcome line",
+			outcome: "PASS",
+			usage:   Usage{Engine: "gemini (flash)", Duration: 5 * time.Second},
+			reused:  false,
+			want:    "Aspect gate outcome: PASS",
+		},
+		{
+			name:    "antigravity flash engine without duration omits zero cost and shows engine",
+			outcome: "PASS",
+			usage:   Usage{Engine: DefaultAntigravityEngine},
+			reused:  false,
+			want:    "Aspect gate outcome: PASS — Engine: antigravity (flash)",
+		},
+		{
+			name:    "antigravity flash engine with duration shows engine and duration without zero cost",
+			outcome: "BLOCK",
+			usage:   Usage{Engine: DefaultAntigravityEngine, Duration: 14 * time.Second},
+			reused:  false,
+			want:    "Aspect gate outcome: BLOCK — Engine: antigravity (flash) (~14s)",
+		},
+		{
 			name:    "fresh run with prompt and completion",
 			outcome: "PASS",
 			usage: Usage{

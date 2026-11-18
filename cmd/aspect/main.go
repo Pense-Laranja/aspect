@@ -50,6 +50,9 @@ Usage:
   aspect gate extract -o FILE [flags] [input]  save the report an agent printed (claude -p output)
   aspect review [flags]                run the review agents on Gemini and gate the change;
                                        exit 1 when the gates block, 2 when there is no verdict
+  aspect review prepare [flags]        prepare reviewer prompt bundles without calling Gemini
+                                       (reuses/carries valid runs; -json emits PreparedRun)
+  aspect review finalize [run] [flags] normalize raw outputs, run gate.Check, and finish the run
   aspect review status [run-id]        a run's agents and outcome (the current run; live while it runs)
   aspect review findings [run-id] [-severity S] [-agent A]   a run's findings, most severe first
   aspect review compare <run-a> <run-b>                     two runs side by side, agent by agent
@@ -130,7 +133,10 @@ Review flags:
   -pr N             pull request number (default: the branch's open pull request)
   -publish          publish the result with the repository's .claude/review/publish.sh
   -force            review again even if a run of the same diff exists
+  -agent A          run only planned agent A in an isolated .review/agent-<time> run
   -o FILE           also write the Markdown result to FILE
+  prepare:  -json (emit PreparedRun JSON)  -engine LABEL (default "antigravity (flash)")
+  finalize: [run-id-or-dir] -repo DIR -pr N -publish -o FILE (no API key needed)
   Each reviewer is shown the system's constraints and the rules of the modules its files
   belong to (see aspect context), within CODE_REVIEWER_SPEC_BUDGET tokens (30000; 0: none).
   The run is .review/<run-id>/: plan.json, the reports, status.json. Gemini credentials

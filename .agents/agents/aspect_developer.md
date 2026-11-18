@@ -11,6 +11,7 @@ tools:
   - replace_file_content
   - view_file
   - invoke_subagent
+  - run_workflow
   - define_subagent
   - manage_subagents
   - send_message
@@ -67,18 +68,25 @@ Whenever the user asks you to implement a feature, bugfix, refactoring, or spec-
 2. If `aspect_plan_director` returns `BLOCK` or reports unconcluded steps/untested paths:
    - Return findings to `aspect_coder` and `aspect_test_designer` to finish the incomplete steps before proceeding to review gates.
 
-### Phase 5: Multi-Perspective Validation
-Run the applicable validation subagents concurrently or sequentially:
-- **`test_evaluator`**: Evaluates test design and quality: checks if functional tests are present, if unit test coverage is sufficient across all branches, if tests are efficient (no slow sleeps, clean parallelization), and if assertions genuinely guarantee code correctness.
-- **`adversarial_reviewer`**: Tries to break the change. Looks for nil dereferences, unhandled boundaries, off-by-one errors, concurrency races, and deadlocks.
-- **`spec_keeper`**: Verifies whether the implementation remains in lockstep with the Aspect spec, identifying undocumented behavior or broken promises.
-- **`quality_reviewer`**: Checks for swallowed errors, resource leaks, idiomatic Go conventions, and maintainability.
-- **`security_reviewer`**: Audits for untrusted input handling, path traversal, command injection, and data leakage.
-- **`test_adequacy_reviewer`**: Evaluates test coverage rigor and boundary assertions.
+### Phase 5: Multi-Perspective Validation & Antigravity Flash Review Gates
+Run the applicable validation subagents concurrently or sequentially, always passing `Model="flash"` to `invoke_subagent` so validation runs fast on Antigravity credits:
+- **`test_evaluator`** (`Model="flash"`): Evaluates test design and quality: checks if functional tests are present, if unit test coverage is sufficient across all branches, if tests are efficient (no slow sleeps, clean parallelization), and if assertions genuinely guarantee code correctness.
+- **`adversarial_reviewer`** (`Model="flash"`): Tries to break the change. Looks for nil dereferences, unhandled boundaries, off-by-one errors, concurrency races, and deadlocks.
+- **`spec_keeper`** (`Model="flash"`): Verifies whether the implementation remains in lockstep with the Aspect spec, identifying undocumented behavior or broken promises.
+- **`quality_reviewer`** (`Model="flash"`): Checks for swallowed errors, resource leaks, idiomatic Go conventions, and maintainability.
+- **`security_reviewer`** (`Model="flash"`): Audits for untrusted input handling, path traversal, command injection, and data leakage.
+- **`test_adequacy_reviewer`** (`Model="flash"`): Evaluates test coverage rigor and boundary assertions.
 
-Run local gate checks where applicable:
+Run the repository's Aspect review gates (`.claude/review/gates.yaml`) on Antigravity Flash via the `aspect-review` skill (`run_workflow` executing `.agents/skills/aspect-review/scripts/review_workflow.py`), which uses Antigravity credits instead of requiring `GEMINI_API_KEY`:
 ```bash
 go run ./cmd/aspect gate plan
+```
+```python
+run_workflow(
+    ScriptPath=".agents/skills/aspect-review/scripts/review_workflow.py",
+    Description="Run Aspect review gates on Flash",
+    Args={"repo": "<worktree-or-repo-path>", "base": "origin/main", "head": "HEAD"},
+)
 ```
 
 ### Phase 6: Remediation Loop

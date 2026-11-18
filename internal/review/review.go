@@ -98,6 +98,9 @@ type Options struct {
 	// published and never the current run: a single reviewer's verdict must
 	// not read as the gates'.
 	Agent string
+	// EngineLabel overrides the engine label recorded in status.json and Usage
+	// (default: "gemini (<model>)" for Run, "antigravity (flash)" for Prepare).
+	EngineLabel string
 	// Started, when set, is called with the run id once the run's directory
 	// exists; a reused run returns at once and does not call it.
 	Started func(runID string)
@@ -105,24 +108,27 @@ type Options struct {
 
 // Result is a review's outcome.
 type Result struct {
-	RunID  string
-	RunDir string
-	Cached bool // an earlier run of the same diff was reused
+	RunID  string `json:"run_id"`
+	RunDir string `json:"run_dir"`
+	Cached bool   `json:"cached,omitempty"` // an earlier run of the same diff was reused
 	// CarriedFrom is the run whose verdict was carried to this head, when
 	// the reused run judged an earlier one (findCachedRun); Plan.CarriedFrom
 	// has its range.
-	CarriedFrom string
+	CarriedFrom string `json:"carried_from,omitempty"`
 	// CarryError says why a verdict that could have been carried was not,
 	// and the change was reviewed afresh instead.
-	CarryError string
-	PR, PRURL  string
-	Plan       *gate.Plan
+	CarryError string     `json:"carry_error,omitempty"`
+	PR         string     `json:"pr,omitempty"`
+	PRURL      string     `json:"pr_url,omitempty"`
+	Plan       *gate.Plan `json:"plan,omitempty"`
 	// Outcome is PASS, WARN, OVERRIDDEN, BLOCK or ERROR.
-	Outcome   string
-	Rendered  string // the Markdown result
-	Published string // what publish.sh said, when it ran
-	Usage     Usage
+	Outcome   string `json:"outcome"`
+	Rendered  string `json:"rendered"`            // the Markdown result
+	Published string `json:"published,omitempty"` // what publish.sh said, when it ran
+	Usage     Usage  `json:"usage"`
 }
+
+const defaultPromptBudget = 800_000
 
 func (e *Engine) now() time.Time {
 	if e.Now != nil {
@@ -131,12 +137,41 @@ func (e *Engine) now() time.Time {
 	return time.Now()
 }
 
+func (e *Engine) promptBudget() int {
+	if e.Config.PromptBudget > 0 {
+		return e.Config.PromptBudget
+	}
+	return defaultPromptBudget
+}
+
 func (e *Engine) engineLabel() string {
 	return fmt.Sprintf("gemini (%s)", e.Config.GeminiModel)
 }
 
-// Run reviews the change from opt.Base to opt.Head in opt.Repo.
-func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
+type runInit struct {
+	repo          string
+	baseRef       string
+	headRef       string
+	branch        string
+	pr            PullRequest
+	cfg           *gate.Config
+	plan          *gate.Plan
+	diff          string
+	diffHash      string
+	specOf        func(gate.Planned) string
+	inputsHash    string
+	carryErr      string
+	notCurrent    bool
+	reused        *Result
+	carriedAgents map[string]carriedAgent
+	runID         string
+	dir           string
+	st            *runStatus
+}
+
+// initRun resolves the repository, diff, spec context, cache/carry reuse, and
+// run directory shared by Run and Prepare.
+func (e *Engine) initRun(ctx context.Context, opt Options, engineLabel string) (*runInit, error) {
 	repo, err := filepath.Abs(firstNonEmpty(opt.Repo, e.Config.DefaultRepo, "."))
 	if err != nil {
 		return nil, err
@@ -153,6 +188,11 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, a := range plan.Agents {
+		if !isSafeSegment(a.Agent) {
+			return nil, fmt.Errorf("unsafe agent name %q in gate plan", a.Agent)
+		}
+	}
 	diff, err := gitx.Run(ctx, repo, "diff", plan.Base+"..."+plan.Head)
 	if err != nil {
 		return nil, err
@@ -166,6 +206,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 
 	carryErr := ""
 	prefix := runDirPrefix
+	notCurrent := opt.Agent != ""
 	if opt.Agent != "" {
 		var only []gate.Planned
 		var planned []string
@@ -180,7 +221,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		}
 		plan.Agents, prefix = only, agentRunPrefix
 	}
-	if !opt.Force && opt.Agent == "" {
+	if !opt.Force && !notCurrent {
 		if dir, carried := e.findCachedRun(ctx, repo, plan, diff, diffHash, inputsHash); dir != "" {
 			if carried {
 				// A carry is a saving, never a requirement: when it cannot be
@@ -191,13 +232,22 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 				}
 			}
 			if dir != "" {
-				return e.reuse(ctx, repo, dir, cfg, plan, pr, opt.Publish)
+				res, err := e.reuse(ctx, repo, dir, cfg, plan, pr, opt.Publish)
+				if err != nil {
+					return nil, err
+				}
+				return &runInit{
+					repo: repo, baseRef: base, headRef: head, branch: branch, pr: pr,
+					cfg: cfg, plan: res.Plan, diff: diff, diffHash: diffHash,
+					specOf: specOf, inputsHash: inputsHash, notCurrent: notCurrent,
+					reused: res,
+				}, nil
 			}
 		}
 	}
 
 	var carriedAgents map[string]carriedAgent
-	if !opt.Force && opt.Agent == "" && len(plan.Agents) > 0 {
+	if !opt.Force && !notCurrent && len(plan.Agents) > 0 {
 		carriedAgents = e.findCarriedAgents(ctx, repo, cfg, plan, diff, inputsHash, specOf)
 	}
 
@@ -232,7 +282,8 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	st := &runStatus{
 		dir: dir, runID: runID, baseRef: base, headRef: head, baseSHA: plan.Base, headSHA: plan.Head,
 		branch: branch, diffHash: diffHash, pr: pr.Number, prURL: pr.URL, state: stateRunning,
-		agents: map[string]*agentStatus{}, startedAt: e.now(), now: e.now, notCurrent: opt.Agent != "",
+		defaultEngine: engineLabel, agents: map[string]*agentStatus{}, startedAt: e.now(), now: e.now,
+		notCurrent: notCurrent,
 	}
 	st.update(func() {
 		now := e.now()
@@ -244,40 +295,26 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 			}
 		}
 	})
-	res := &Result{RunID: runID, RunDir: dir, PR: pr.Number, PRURL: pr.URL, Plan: plan, CarryError: carryErr}
-	if len(plan.Agents) == 0 {
-		res.Outcome, res.Rendered = st.finish(OutcomePass, ""), noAgents
-		res.Usage = st.usage
-		return res, nil
-	}
+	return &runInit{
+		repo: repo, baseRef: base, headRef: head, branch: branch, pr: pr,
+		cfg: cfg, plan: plan, diff: diff, diffHash: diffHash,
+		specOf: specOf, inputsHash: inputsHash, carryErr: carryErr,
+		notCurrent: notCurrent, carriedAgents: carriedAgents,
+		runID: runID, dir: dir, st: st,
+	}, nil
+}
 
-	shared := ""
-	if pr.Title != "" || pr.Body != "" {
-		body := pr.Body
-		if len(body) > maxDescriptionChars {
-			body = body[:maxDescriptionChars] + "\n[description truncated]"
+// finishRun evaluates reports with gate.Check, optionally writes rendered.md
+// and publishes, records the completed status, and returns the Result.
+func (e *Engine) finishRun(ctx context.Context, repo, dir string, cfg *gate.Config, plan *gate.Plan, pr PullRequest, carryErr string, publish, notCurrent bool, st *runStatus, allCarried, writeRendered bool) *Result {
+	res := &Result{RunID: st.runID, RunDir: dir, PR: pr.Number, PRURL: pr.URL, Plan: plan, CarryError: carryErr}
+	if len(plan.Agents) == 0 {
+		res.Outcome, res.Rendered = st.finish(OutcomePass, st.published), noAgents
+		res.Usage = st.usage
+		if writeRendered {
+			_ = os.WriteFile(filepath.Join(dir, "rendered.md"), []byte(res.Rendered), 0o644)
 		}
-		shared = strings.TrimRight("### Pull request\nTitle: "+pr.Title+"\n\n"+body, " \n\t")
-	}
-	rv := &reviewer{client: e.Client, engine: e.engineLabel(), model: e.Config.GeminiModel, promptBudget: e.Config.PromptBudget}
-	if e.Config.MaxConcurrency > 0 {
-		rv.slots = make(chan struct{}, e.Config.MaxConcurrency)
-	}
-	var wg sync.WaitGroup
-	for _, a := range plan.Agents {
-		if _, ok := carriedAgents[a.Agent]; ok {
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			e.runAgent(ctx, repo, dir, plan, a, diff, shared, specOf(a), rv, st)
-		}()
-	}
-	wg.Wait()
-	if err := ctx.Err(); err != nil {
-		st.fail("review pipeline stopped: cancelled")
-		return nil, err
+		return res
 	}
 
 	_, _, _, _, u := st.counts()
@@ -289,12 +326,15 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		CompletionTokens: u.CompletionTokens,
 		TotalTokens:      u.TotalTokens,
 		Duration:         duration,
-		Reused:           len(plan.Agents) > 0 && len(carriedAgents) == len(plan.Agents),
+		Reused:           allCarried,
 	}
 
 	check, rendered := e.check(cfg, plan, dir, usageSummary)
-	published := ""
-	if opt.Publish && opt.Agent == "" {
+	if writeRendered {
+		_ = os.WriteFile(filepath.Join(dir, "rendered.md"), []byte(rendered), 0o644)
+	}
+	published := st.published
+	if publish && !notCurrent && (pr.Number == "" || st.pr != pr.Number || published == "") {
 		published = e.publish(ctx, repo, dir, pr.Number)
 	}
 	outcome := strings.ToUpper(check.Outcome)
@@ -304,7 +344,89 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	res.Outcome = st.finish(outcome, published)
 	res.Usage = st.usage
 	res.Rendered, res.Published = rendered, published
-	return res, nil
+	return res
+}
+
+func sharedPRContext(pr PullRequest) string {
+	if pr.Title == "" && pr.Body == "" {
+		return ""
+	}
+	body := pr.Body
+	if len(body) > maxDescriptionChars {
+		body = body[:maxDescriptionChars] + "\n[description truncated]"
+	}
+	return strings.TrimRight("### Pull request\nTitle: "+pr.Title+"\n\n"+body, " \n\t")
+}
+
+func (e *Engine) scopedDiff(ctx context.Context, repo string, plan *gate.Plan, a gate.Planned, fullDiff string) (string, error) {
+	if len(a.Files) == 0 {
+		return fullDiff, nil
+	}
+	args := append([]string{"--literal-pathspecs", "diff", plan.Base + "..." + plan.Head, "--"}, a.Files...)
+	d, err := gitx.Run(ctx, repo, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(d), nil
+}
+
+// buildAgentRequest builds the prompt request for one planned agent.
+// The diff is already scoped to the agent's files, so no file list is repeated.
+func buildAgentRequest(a gate.Planned, plan *gate.Plan, agentDiff, shared, specContext, def string) request {
+	assignment := strings.Join([]string{
+		"### Your review assignment", "```",
+		"agent: " + a.Agent, "base: " + plan.Base, "head: " + plan.Head,
+		"spec: " + firstNonEmpty(plan.Spec, gate.NoSpec), "mode: " + a.Mode, "```",
+	}, "\n")
+	return request{
+		agent:         a.Agent,
+		instructions:  promptBody(def),
+		outputFormat:  "Produce your report strictly conforming to the `aspect-review/v1` schema.\n" + reportFormat,
+		diff:          agentDiff,
+		sharedContext: shared,
+		specContext:   specContext,
+		agentContext:  assignment,
+	}
+}
+
+// Run reviews the change from opt.Base to opt.Head in opt.Repo.
+func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
+	engineLabel := firstNonEmpty(opt.EngineLabel, e.engineLabel())
+	ri, err := e.initRun(ctx, opt, engineLabel)
+	if err != nil {
+		return nil, err
+	}
+	if ri.reused != nil {
+		return ri.reused, nil
+	}
+	if len(ri.plan.Agents) == 0 {
+		return e.finishRun(ctx, ri.repo, ri.dir, ri.cfg, ri.plan, ri.pr, ri.carryErr, opt.Publish, ri.notCurrent, ri.st, false, false), nil
+	}
+
+	shared := sharedPRContext(ri.pr)
+	rv := &reviewer{client: e.Client, engine: engineLabel, model: e.Config.GeminiModel, promptBudget: e.promptBudget()}
+	if e.Config.MaxConcurrency > 0 {
+		rv.slots = make(chan struct{}, e.Config.MaxConcurrency)
+	}
+	var wg sync.WaitGroup
+	for _, a := range ri.plan.Agents {
+		if _, ok := ri.carriedAgents[a.Agent]; ok {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e.runAgent(ctx, ri.repo, ri.dir, ri.plan, a, ri.diff, shared, ri.specOf(a), rv, ri.st)
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		ri.st.fail("review pipeline stopped: cancelled")
+		return nil, err
+	}
+
+	allCarried := len(ri.plan.Agents) > 0 && len(ri.carriedAgents) == len(ri.plan.Agents)
+	return e.finishRun(ctx, ri.repo, ri.dir, ri.cfg, ri.plan, ri.pr, ri.carryErr, opt.Publish, ri.notCurrent, ri.st, allCarried, false), nil
 }
 
 // specContexts returns what each planned agent is shown of the spec: the
@@ -527,15 +649,10 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 	}
 	st.queued(a.Agent)
 
-	agentDiff := diff
-	if len(a.Files) > 0 {
-		args := append([]string{"--literal-pathspecs", "diff", plan.Base + "..." + plan.Head, "--"}, a.Files...)
-		d, err := gitx.Run(ctx, repo, args...)
-		if err != nil {
-			fail(err.Error())
-			return
-		}
-		agentDiff = strings.TrimSpace(d)
+	agentDiff, err := e.scopedDiff(ctx, repo, plan, a, diff)
+	if err != nil {
+		fail(err.Error())
+		return
 	}
 	if agentDiff == "" {
 		write(emptyReport(a.Agent, a.Mode, plan.Base, plan.Head, "No changes matching this agent's scoped paths."), usage{})
@@ -552,22 +669,7 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 		return
 	}
 
-	// The change block of PROTOCOL.md. The diff is already scoped to the
-	// agent's files, so no file list is repeated.
-	assignment := strings.Join([]string{
-		"### Your review assignment", "```",
-		"agent: " + a.Agent, "base: " + plan.Base, "head: " + plan.Head,
-		"spec: " + firstNonEmpty(plan.Spec, gate.NoSpec), "mode: " + a.Mode, "```",
-	}, "\n")
-	req := request{
-		agent:         a.Agent,
-		instructions:  promptBody(def),
-		outputFormat:  "Produce your report strictly conforming to the `aspect-review/v1` schema.\n" + reportFormat,
-		diff:          agentDiff,
-		sharedContext: shared,
-		specContext:   specContext,
-		agentContext:  assignment,
-	}
+	req := buildAgentRequest(a, plan, agentDiff, shared, specContext, def)
 	raw, u, err := rv.review(ctx, req, hooks{
 		planned:  func(parts int) { st.planned(a.Agent, rv.engine, parts) },
 		waiting:  func() { st.waiting(a.Agent) },
@@ -656,6 +758,12 @@ func FormatOutcomeLine(outcome string, u Usage, reused bool) string {
 		return fmt.Sprintf("Aspect gate outcome: %s — Cost: $0.0000 (reused)", outcome)
 	}
 	if u.TotalTokens == 0 && u.CostUSD == 0 {
+		if u.Engine != "" && !strings.Contains(strings.ToLower(u.Engine), "gemini") {
+			if u.Duration > 0 {
+				return fmt.Sprintf("Aspect gate outcome: %s — Engine: %s (%s)", outcome, u.Engine, gate.FormatDuration(u.Duration))
+			}
+			return fmt.Sprintf("Aspect gate outcome: %s — Engine: %s", outcome, u.Engine)
+		}
 		return fmt.Sprintf("Aspect gate outcome: %s", outcome)
 	}
 	var parts []string

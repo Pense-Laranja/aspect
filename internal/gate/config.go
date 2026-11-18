@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -102,6 +104,15 @@ func ParseConfig(b []byte) (*Config, error) {
 	return &c, c.validate()
 }
 
+func isSafeAgentName(s string) bool {
+	return s != "" &&
+		s != "." &&
+		s != ".." &&
+		!strings.HasPrefix(s, ".") &&
+		!strings.ContainsAny(s, `/\`) &&
+		filepath.Base(s) == s
+}
+
 func (c *Config) validate() error {
 	if len(c.Gates) == 0 {
 		return fmt.Errorf("no gates")
@@ -111,6 +122,8 @@ func (c *Config) validate() error {
 		switch {
 		case g.Agent == "":
 			return fmt.Errorf("gates[%d]: agent is required", i)
+		case !isSafeAgentName(g.Agent):
+			return fmt.Errorf("gates[%d]: invalid agent name %q", i, g.Agent)
 		case seen[g.Agent]:
 			return fmt.Errorf("gates[%d]: agent %q listed twice", i, g.Agent)
 		case len(g.Paths) == 0:

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -28,6 +29,10 @@ func runReview(args []string) error {
 		switch args[0] {
 		case "status", "findings", "compare", "runs":
 			return runReviewRead(args[0], args[1:])
+		case "prepare":
+			return runReviewPrepare(args[1:])
+		case "finalize":
+			return runReviewFinalize(args[1:])
 		}
 	}
 	cfg := review.ConfigFromEnv()
@@ -38,6 +43,7 @@ func runReview(args []string) error {
 	pr := fs.String("pr", "", "pull request number (default: the branch's open pull request)")
 	publish := fs.Bool("publish", false, "publish the result with .claude/review/publish.sh")
 	force := fs.Bool("force", false, "review again even if a run of the same diff exists")
+	agent := fs.String("agent", "", "run only this planned agent in an isolated .review/agent-<time> run")
 	out := fs.String("o", "", "also write the Markdown result to this file")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -53,10 +59,22 @@ func runReview(args []string) error {
 	defer stop()
 	eng := &review.Engine{Config: cfg, Client: cfg.Gemini()}
 	fmt.Fprintf(os.Stderr, "aspect review: %s (%s...%s) on Gemini %s\n", *repo, *base, *head, cfg.GeminiModel)
-	res, err := eng.Run(ctx, review.Options{Repo: *repo, Base: *base, Head: *head, PR: *pr, Publish: *publish, Force: *force})
+	res, err := eng.Run(ctx, review.Options{
+		Repo:    *repo,
+		Base:    *base,
+		Head:    *head,
+		PR:      *pr,
+		Publish: *publish,
+		Force:   *force,
+		Agent:   *agent,
+	})
 	if err != nil {
 		return err
 	}
+	return finishReviewCLI(res, *out)
+}
+
+func finishReviewCLI(res *review.Result, outPath string) error {
 	switch {
 	case res.CarriedFrom != "":
 		fmt.Printf("Only the base moved since run %s (same diff, agents and spec): its verdict is carried to this head as run %s.\n", res.CarriedFrom, res.RunID)
@@ -73,8 +91,8 @@ func runReview(args []string) error {
 	if res.Published != "" {
 		fmt.Printf("Publish status: %s\n", res.Published)
 	}
-	if *out != "" {
-		if err := os.WriteFile(*out, []byte(res.Rendered), 0o644); err != nil {
+	if outPath != "" {
+		if err := os.WriteFile(outPath, []byte(res.Rendered), 0o644); err != nil {
 			return err
 		}
 	}
@@ -85,6 +103,97 @@ func runReview(args []string) error {
 		return exitCode{1, "review gates blocked"}
 	}
 	return exitCode{2, fmt.Sprintf("review gates gave no verdict (%s): a gate agent has no report", res.Outcome)}
+}
+
+func runReviewPrepare(args []string) error {
+	cfg := review.ConfigFromEnv()
+	fs := flag.NewFlagSet("review prepare", flag.ContinueOnError)
+	repo := fs.String("repo", cfg.DefaultRepo, "repository to review")
+	base := fs.String("base", "origin/main", "base ref; the diff starts at its merge base with head")
+	head := fs.String("head", "HEAD", "head ref")
+	pr := fs.String("pr", "", "pull request number (default: the branch's open pull request)")
+	publish := fs.Bool("publish", false, "publish a reused or zero-task result with .claude/review/publish.sh")
+	force := fs.Bool("force", false, "prepare again even if a run of the same diff exists")
+	agent := fs.String("agent", "", "prepare only this planned agent in an isolated .review/agent-<time> run")
+	engine := fs.String("engine", review.DefaultAntigravityEngine, "engine label recorded in status.json and manifest.json")
+	asJSON := fs.Bool("json", false, "print the prepared run (PreparedRun) as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("review prepare: unexpected arguments %v", fs.Args())
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	eng := &review.Engine{Config: cfg}
+	prep, err := eng.Prepare(ctx, review.Options{
+		Repo:        *repo,
+		Base:        *base,
+		Head:        *head,
+		PR:          *pr,
+		Publish:     *publish,
+		Force:       *force,
+		Agent:       *agent,
+		EngineLabel: *engine,
+	})
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(prep)
+	}
+	if prep.Result != nil {
+		return finishReviewCLI(prep.Result, "")
+	}
+	fmt.Printf("Prepared run %s (%s): %d task(s) in %s\n", prep.RunID, prep.Status, len(prep.Tasks), prep.RunDir)
+	return nil
+}
+
+func parseFinalizeArgs(args []string) (review.FinalizeOptions, string, error) {
+	var opt review.FinalizeOptions
+	var out string
+	var runs []string
+	fs := flag.NewFlagSet("review finalize", flag.ContinueOnError)
+	fs.StringVar(&opt.Repo, "repo", "", "repository whose .review/ run to finalize")
+	fs.StringVar(&opt.PR, "pr", "", "pull request number override")
+	fs.BoolVar(&opt.Publish, "publish", false, "publish the result with .claude/review/publish.sh")
+	fs.StringVar(&out, "o", "", "also write the Markdown result to this file")
+	for len(args) > 0 {
+		if err := fs.Parse(args); err != nil {
+			return opt, out, err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		runs = append(runs, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+	if len(runs) > 1 {
+		return opt, out, fmt.Errorf("review finalize: takes 0 to 1 run arguments, got %d (%v)", len(runs), runs)
+	}
+	if len(runs) == 1 {
+		opt.Run = runs[0]
+	}
+	return opt, out, nil
+}
+
+func runReviewFinalize(args []string) error {
+	opt, outPath, err := parseFinalizeArgs(args)
+	if err != nil {
+		return err
+	}
+	cfg := review.ConfigFromEnv()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	eng := &review.Engine{Config: cfg}
+	res, err := eng.Finalize(ctx, opt)
+	if err != nil {
+		return err
+	}
+	return finishReviewCLI(res, outPath)
 }
 
 // readArgs are the parsed arguments of `aspect review status|findings|

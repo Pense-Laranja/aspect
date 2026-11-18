@@ -243,14 +243,9 @@ func (e *Engine) agentInputHash(repo string, cfg *gate.Config, plan *gate.Plan, 
 
 // agentDiffHash hashes the exact diff that runAgent sends to a.
 func (e *Engine) agentDiffHash(ctx context.Context, repo string, plan *gate.Plan, a gate.Planned, fullDiff string) (string, error) {
-	agentDiff := fullDiff
-	if len(a.Files) > 0 {
-		args := append([]string{"--literal-pathspecs", "diff", plan.Base + "..." + plan.Head, "--"}, a.Files...)
-		d, err := gitx.Run(ctx, repo, args...)
-		if err != nil {
-			return "", err
-		}
-		agentDiff = strings.TrimSpace(d)
+	agentDiff, err := e.scopedDiff(ctx, repo, plan, a, fullDiff)
+	if err != nil {
+		return "", err
 	}
 	sum := sha256.Sum256([]byte(agentDiff))
 	return hex.EncodeToString(sum[:]), nil
@@ -576,7 +571,7 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	}
 	// What the run records about itself is written anew below; comment.md
 	// and rendered.md name the head they judged, and are rendered again.
-	skip := []string{"plan.json", "status.json", "diff.hash", inputsHashFile, "comment.md", "rendered.md"}
+	skip := []string{"plan.json", "status.json", "diff.hash", inputsHashFile, "comment.md", "rendered.md", "manifest.json"}
 	for _, ent := range entries {
 		if !ent.Type().IsRegular() || slices.Contains(skip, ent.Name()) {
 			continue
@@ -632,14 +627,18 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	}
 	// No model was paid for this run: what the reviews cost stays on the run
 	// that made them, so a sum over runs counts it once.
-	status.Set("total_cost_usd", 0)
-	status.Set("total_tokens", 0)
-	status.Set("usage", map[string]any{"total_cost_usd": 0, "prompt_tokens": 0, "cached_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+	if status.Has("total_cost_usd") || status.Has("usage") || strings.Contains(strings.ToLower(asText(status.Get("engine"))), "gemini") {
+		status.Set("total_cost_usd", 0)
+		status.Set("total_tokens", 0)
+		status.Set("usage", map[string]any{"total_cost_usd": 0, "prompt_tokens": 0, "cached_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+	}
 	if agents, ok := status.Get("agents").(*Object); ok {
 		for _, name := range agents.Keys() {
 			if a, ok := agents.Get(name).(*Object); ok {
-				a.Set("cost_usd", 0)
-				a.Set("tokens", map[string]any{"prompt": 0, "cached": 0, "completion": 0, "total": 0})
+				if a.Has("cost_usd") || a.Has("tokens") {
+					a.Set("cost_usd", 0)
+					a.Set("tokens", map[string]any{"prompt": 0, "cached": 0, "completion": 0, "total": 0})
+				}
 				a.Set("duration_seconds", 0)
 			}
 		}
@@ -707,6 +706,9 @@ func (e *Engine) reuse(ctx context.Context, repo, dir string, cfg *gate.Config, 
 	var runUsage Usage
 	if summary, err := loadRunDir(dir); err == nil {
 		runUsage = summary.Usage
+		if runUsage.Engine == "" && summary.Engine != "" {
+			runUsage.Engine = summary.Engine
+		}
 		if runUsage.CostUSD == 0 && summary.TotalCostUSD > 0 {
 			runUsage.CostUSD = summary.TotalCostUSD
 		}

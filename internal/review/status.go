@@ -88,26 +88,27 @@ func (a *agentStatus) applyCarried(rep *Report, origin *gate.Carried, now time.T
 // runStatus is a run's progress, kept in .review/<run-id>/status.json and
 // rewritten at every change so a dashboard can follow it.
 type runStatus struct {
-	mu         sync.Mutex
-	dir        string // .review/<run-id>
-	runID      string
-	baseRef    string
-	headRef    string
-	baseSHA    string
-	headSHA    string
-	branch     string
-	diffHash   string
-	pr, prURL  string
-	state      string
-	outcome    string
-	errMsg     string
-	published  string
-	agents     map[string]*agentStatus
-	order      []string
-	startedAt  time.Time
-	finishedAt time.Time
-	usage      Usage
-	now        func() time.Time
+	mu            sync.Mutex
+	dir           string // .review/<run-id>
+	runID         string
+	baseRef       string
+	headRef       string
+	baseSHA       string
+	headSHA       string
+	branch        string
+	diffHash      string
+	pr, prURL     string
+	state         string
+	defaultEngine string
+	outcome       string
+	errMsg        string
+	published     string
+	agents        map[string]*agentStatus
+	order         []string
+	startedAt     time.Time
+	finishedAt    time.Time
+	usage         Usage
+	now           func() time.Time
 	// notCurrent keeps the run out of current_run.json (Options.Agent).
 	notCurrent bool
 }
@@ -175,7 +176,7 @@ func (r *runStatus) engine() string {
 		u.add(usage{Engine: r.agents[name].engine})
 	}
 	if u.Engine == "" {
-		return "gemini"
+		return firstNonEmpty(r.defaultEngine, "gemini")
 	}
 	return u.Engine
 }
@@ -279,6 +280,9 @@ func (r *runStatus) finish(outcome, published string) string {
 		r.state = stateCompleted
 		r.finishedAt = r.now()
 		completed, _, _, _, u := r.counts()
+		if u.Engine == "" && r.defaultEngine != "" {
+			u.Engine = r.defaultEngine
+		}
 		if !r.startedAt.IsZero() && !r.finishedAt.IsZero() {
 			u.Duration = r.finishedAt.Sub(r.startedAt)
 		}
