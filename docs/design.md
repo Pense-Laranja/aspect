@@ -424,6 +424,15 @@ Gemini, normalizes the reports the model answers with into `aspect-review/v1`,
 and decides with `gate.Check`. An agent that fails leaves no report, so a gate
 that did not run blocks rather than passes.
 
+Every prompt is the agents' shared part first (system prompt, PR, change
+overview, spec, diff) and the agent's own part last (assignment, role,
+output format). Agents with the same file scope share the first part byte for
+byte; when two or more requests of a run do, it goes once into an explicit
+Gemini context cache, created on first use and deleted when the run ends, and
+each request sends only its own part as a second user turn. Each request is
+priced by the model that served it, thinking at the output rate
+(`internal/llm/pricing.go`).
+
 ### 3.3 On pull requests
 
 `.github/workflows/review-gates.yml` runs on `pull_request` (opened,

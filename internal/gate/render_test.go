@@ -127,12 +127,13 @@ func TestRender_UsageFooterAppended(t *testing.T) {
 				PromptTokens:     4500,
 				CompletionTokens: 1200,
 				CachedTokens:     2100,
+				ThoughtsTokens:   2100,
 				TotalTokens:      7800,
 				Duration:         87 * time.Second,
 			},
 		}
 		rendered := Render(c, p, r, opt)
-		wantFooter := "\n---\nCost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached [75% discount], ~1m27s)\n"
+		wantFooter := "\n---\nCost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k thinking, 2.1k cached, ~1m27s)\n"
 		if !strings.HasSuffix(rendered, wantFooter) {
 			t.Errorf("rendered does not end with expected footer:\nGot:\n%s\nWant footer:\n%s", rendered, wantFooter)
 		}

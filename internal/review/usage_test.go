@@ -61,7 +61,7 @@ func TestOutcomeLineFormatting(t *testing.T) {
 				TotalTokens:      7800,
 			},
 			reused: false,
-			want:   "Aspect gate outcome: PASS — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached [75% discount])",
+			want:   "Aspect gate outcome: PASS — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached)",
 		},
 		{
 			name:    "fresh run with duration included",
@@ -75,7 +75,7 @@ func TestOutcomeLineFormatting(t *testing.T) {
 				Duration:         87 * time.Second,
 			},
 			reused: false,
-			want:   "Aspect gate outcome: BLOCK — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached [75% discount], ~1m27s)",
+			want:   "Aspect gate outcome: BLOCK — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached, ~1m27s)",
 		},
 		{
 			name:    "fresh run with sub-second duration",

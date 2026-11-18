@@ -259,22 +259,56 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		}
 		shared = strings.TrimRight("### Pull request\nTitle: "+pr.Title+"\n\n"+body, " \n\t")
 	}
-	rv := &reviewer{client: e.Client, engine: e.engineLabel(), model: e.Config.GeminiModel, promptBudget: e.Config.PromptBudget}
+	rv := &reviewer{client: e.Client, engine: e.engineLabel(), model: e.Config.GeminiModel, promptBudget: e.Config.PromptBudget, now: e.now}
 	if e.Config.MaxConcurrency > 0 {
 		rv.slots = make(chan struct{}, e.Config.MaxConcurrency)
 	}
-	var wg sync.WaitGroup
+	rv.cache = newContextCache(e.Client, e.Config.CacheTTL, e.now)
+
+	// Every agent's prompts are built before the first is sent, so the
+	// context cache knows which prefixes more than one request shares.
+	var toRun []gate.Planned
 	for _, a := range plan.Agents {
-		if _, ok := carriedAgents[a.Agent]; ok {
+		if _, ok := carriedAgents[a.Agent]; !ok {
+			toRun = append(toRun, a)
+		}
+	}
+	reqs := make([]*request, len(toRun))
+	var wg sync.WaitGroup
+	for i, a := range toRun {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reqs[i] = e.prepareAgent(ctx, repo, dir, plan, a, diff, shared, specOf(a), st)
+		}()
+	}
+	wg.Wait()
+	for _, req := range reqs {
+		if req != nil {
+			s, parts := planParts(*req, rv.promptBudget)
+			for _, p := range parts {
+				rv.cache.plan(sharedSystemPrompt, promptPrefix(*req, s, p))
+			}
+		}
+	}
+	for i, a := range toRun {
+		if reqs[i] == nil {
 			continue
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.runAgent(ctx, repo, dir, plan, a, diff, shared, specOf(a), rv, st)
+			e.runAgent(ctx, dir, plan, a, *reqs[i], rv, st)
 		}()
 	}
 	wg.Wait()
+	if cacheCost, records := rv.cache.close(ctx, e.Config.GeminiModel); len(records) > 0 {
+		_ = writeJSON(filepath.Join(dir, "context-cache.json"), map[string]any{
+			"cost_usd": cacheCost.CostUSD, "caches": records,
+			"pricing_source": llm.GeminiPricingSource, "pricing_checked": llm.GeminiPricingChecked,
+		})
+		st.addRunUsage(cacheCost)
+	}
 	if err := ctx.Err(); err != nil {
 		st.fail("review pipeline stopped: cancelled")
 		return nil, err
@@ -287,6 +321,7 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		PromptTokens:     u.PromptTokens,
 		CachedTokens:     u.CachedTokens,
 		CompletionTokens: u.CompletionTokens,
+		ThoughtsTokens:   u.ThoughtsTokens,
 		TotalTokens:      u.TotalTokens,
 		Duration:         duration,
 		Reused:           len(plan.Agents) > 0 && len(carriedAgents) == len(plan.Agents),
@@ -506,25 +541,30 @@ func (e *Engine) newRunDir(repo, prefix string) (string, string, error) {
 	}
 }
 
-// runAgent runs one planned agent and records its report, or its failure.
-func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan, a gate.Planned,
-	diff, shared, specContext string, rv *reviewer, st *runStatus) {
-	out := filepath.Join(dir, a.Agent+".json")
-	fail := func(msg string) {
-		// No <agent>.json: `aspect gate check` blocks a gate whose report
-		// is missing, while a well-formed report with no findings would
-		// pass it. The reason goes in a side file.
-		_ = os.Remove(out)
-		_ = os.WriteFile(filepath.Join(dir, a.Agent+".error.txt"), []byte(msg+"\n"), 0o644)
-		st.failed(a.Agent, msg)
+// agentFailed records an agent that could not run: no <agent>.json, since
+// `aspect gate check` blocks a gate whose report is missing while a
+// well-formed report with no findings would pass it. The reason goes in a
+// side file.
+func agentFailed(dir, agent, msg string, st *runStatus) {
+	_ = os.Remove(filepath.Join(dir, agent+".json"))
+	_ = os.WriteFile(filepath.Join(dir, agent+".error.txt"), []byte(msg+"\n"), 0o644)
+	st.failed(agent, msg)
+}
+
+// agentReported records an agent's report and what it cost.
+func agentReported(dir, agent string, rep *Report, u usage, st *runStatus) {
+	if err := writeJSON(filepath.Join(dir, agent+".json"), rep); err != nil {
+		agentFailed(dir, agent, "writing the report: "+err.Error(), st)
+		return
 	}
-	write := func(rep *Report, u usage) {
-		if err := writeJSON(out, rep); err != nil {
-			fail("writing the report: " + err.Error())
-			return
-		}
-		st.completed(a.Agent, rep, u)
-	}
+	st.completed(agent, rep, u)
+}
+
+// prepareAgent builds one planned agent's request, or records its report
+// or failure when it needs no model (nothing in its scope, no definition)
+// and returns nil.
+func (e *Engine) prepareAgent(ctx context.Context, repo, dir string, plan *gate.Plan, a gate.Planned,
+	diff, shared, specContext string, st *runStatus) *request {
 	st.queued(a.Agent)
 
 	agentDiff := diff
@@ -532,24 +572,24 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 		args := append([]string{"--literal-pathspecs", "diff", plan.Base + "..." + plan.Head, "--"}, a.Files...)
 		d, err := gitx.Run(ctx, repo, args...)
 		if err != nil {
-			fail(err.Error())
-			return
+			agentFailed(dir, a.Agent, err.Error(), st)
+			return nil
 		}
 		agentDiff = strings.TrimSpace(d)
 	}
 	if agentDiff == "" {
-		write(emptyReport(a.Agent, a.Mode, plan.Base, plan.Head, "No changes matching this agent's scoped paths."), usage{})
-		return
+		agentReported(dir, a.Agent, emptyReport(a.Agent, a.Mode, plan.Base, plan.Head, "No changes matching this agent's scoped paths."), usage{}, st)
+		return nil
 	}
 	def, ok := e.agentDefinition(repo, a.Agent)
 	if !ok {
 		if a.Mode == "gate" {
 			// A gate nobody can run has not passed: leave no report.
-			fail(fmt.Sprintf("agent definition %s.md not found", a.Agent))
-			return
+			agentFailed(dir, a.Agent, fmt.Sprintf("agent definition %s.md not found", a.Agent), st)
+			return nil
 		}
-		write(emptyReport(a.Agent, a.Mode, plan.Base, plan.Head, fmt.Sprintf("Agent %s definition missing; skipped.", a.Agent)), usage{})
-		return
+		agentReported(dir, a.Agent, emptyReport(a.Agent, a.Mode, plan.Base, plan.Head, fmt.Sprintf("Agent %s definition missing; skipped.", a.Agent)), usage{}, st)
+		return nil
 	}
 
 	// The change block of PROTOCOL.md. The diff is already scoped to the
@@ -559,7 +599,7 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 		"agent: " + a.Agent, "base: " + plan.Base, "head: " + plan.Head,
 		"spec: " + firstNonEmpty(plan.Spec, gate.NoSpec), "mode: " + a.Mode, "```",
 	}, "\n")
-	req := request{
+	return &request{
 		agent:         a.Agent,
 		instructions:  promptBody(def),
 		outputFormat:  "Produce your report strictly conforming to the `aspect-review/v1` schema.\n" + reportFormat,
@@ -568,6 +608,11 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 		specContext:   specContext,
 		agentContext:  assignment,
 	}
+}
+
+// runAgent sends one prepared agent's request and records its report, or
+// its failure.
+func (e *Engine) runAgent(ctx context.Context, dir string, plan *gate.Plan, a gate.Planned, req request, rv *reviewer, st *runStatus) {
 	raw, u, err := rv.review(ctx, req, hooks{
 		planned:  func(parts int) { st.planned(a.Agent, rv.engine, parts) },
 		waiting:  func() { st.waiting(a.Agent) },
@@ -575,25 +620,28 @@ func (e *Engine) runAgent(ctx context.Context, repo, dir string, plan *gate.Plan
 		partDone: func(done, total int) { st.partDone(a.Agent, done, total) },
 	})
 	if err != nil {
-		fail(describe(err))
+		agentFailed(dir, a.Agent, describe(err), st)
 		return
 	}
 	rep, err := Normalize(raw, AgentRun{Agent: a.Agent, Mode: a.Mode, Base: plan.Base, Head: plan.Head})
 	if err != nil {
-		fail(err.Error())
+		agentFailed(dir, a.Agent, err.Error(), st)
 		return
 	}
 	if u.CostUSD > 0 || strings.Contains(strings.ToLower(u.Engine), "gemini") {
 		side := NewObject()
 		side.Set("engine", u.Engine)
+		side.Set("model", u.Model)
+		side.Set("priced_as", u.PricedAs)
 		side.Set("cost_usd", roundTo(u.CostUSD, 6))
 		side.Set("prompt_tokens", u.PromptTokens)
 		side.Set("cached_tokens", u.CachedTokens)
 		side.Set("completion_tokens", u.CompletionTokens)
+		side.Set("thoughts_tokens", u.ThoughtsTokens)
 		side.Set("total_tokens", u.TotalTokens)
 		_ = writeJSON(filepath.Join(dir, a.Agent+".usage.json"), side)
 	}
-	write(rep, u)
+	agentReported(dir, a.Agent, rep, u, st)
 }
 
 // describe is a never-empty one-line reason for err.
@@ -661,8 +709,11 @@ func FormatOutcomeLine(outcome string, u Usage, reused bool) string {
 	var parts []string
 	parts = append(parts, fmt.Sprintf("%s prompt", gate.FormatTokens(u.PromptTokens)))
 	parts = append(parts, fmt.Sprintf("%s completion", gate.FormatTokens(u.CompletionTokens)))
+	if u.ThoughtsTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s thinking", gate.FormatTokens(u.ThoughtsTokens)))
+	}
 	if u.CachedTokens > 0 {
-		parts = append(parts, fmt.Sprintf("%s cached [75%% discount]", gate.FormatTokens(u.CachedTokens)))
+		parts = append(parts, fmt.Sprintf("%s cached", gate.FormatTokens(u.CachedTokens)))
 	}
 	if u.Duration > 0 {
 		parts = append(parts, gate.FormatDuration(u.Duration))

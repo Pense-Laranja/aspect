@@ -49,6 +49,12 @@ type Config struct {
 	// sending ~85k tokens each in the same second trip the per-minute token
 	// quota.
 	MaxConcurrency int
+	// CacheTTL is how long a run's explicit context cache may live
+	// (CODE_REVIEWER_GEMINI_CACHE_TTL in seconds, 1200; 0 turns explicit
+	// caching off). The run deletes its caches when it ends; the ttl only
+	// bounds what one costs when the run dies first, and must outlast the
+	// run's requests, or they fall back to sending the whole prompt.
+	CacheTTL time.Duration
 	// PromptBudget is the prompt size limit in tokens; a larger diff is
 	// reviewed in parts (CODE_REVIEWER_GEMINI_PROMPT_BUDGET, 800000).
 	PromptBudget int
@@ -84,6 +90,7 @@ func ConfigFromEnv() Config {
 		BlockRetries:         envInt("CODE_REVIEWER_GEMINI_BLOCK_RETRIES", 4),
 		BlockFinalNoThinking: envBool("CODE_REVIEWER_GEMINI_BLOCK_NO_THINKING", true),
 		MaxConcurrency:       envInt("CODE_REVIEWER_GEMINI_MAX_CONCURRENCY", 4),
+		CacheTTL:             envSeconds("CODE_REVIEWER_GEMINI_CACHE_TTL", 1200),
 		PromptBudget:         envInt("CODE_REVIEWER_GEMINI_PROMPT_BUDGET", 800000),
 		SpecBudget:           envInt("CODE_REVIEWER_SPEC_BUDGET", 30000),
 		AspectHome:           os.Getenv("ASPECT_HOME"),

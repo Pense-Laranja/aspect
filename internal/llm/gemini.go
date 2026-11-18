@@ -162,6 +162,7 @@ type geminiRequest struct {
 	SystemInstruction *geminiContent  `json:"system_instruction,omitempty"`
 	Contents          []geminiContent `json:"contents"`
 	GenerationConfig  geminiGenConfig `json:"generationConfig"`
+	CachedContent     string          `json:"cachedContent,omitempty"`
 }
 
 type geminiResponse struct {
@@ -170,6 +171,7 @@ type geminiResponse struct {
 		FinishReason string        `json:"finishReason"`
 	} `json:"candidates"`
 	PromptFeedback map[string]any `json:"promptFeedback"`
+	ModelVersion   string         `json:"modelVersion"`
 	UsageMetadata  struct {
 		PromptTokenCount     int64 `json:"promptTokenCount"`
 		CandidatesTokenCount int64 `json:"candidatesTokenCount"`
@@ -187,7 +189,11 @@ func (g *Gemini) Complete(ctx context.Context, req Request) (Response, error) {
 		Contents:         []geminiContent{{Role: "user", Parts: []geminiPart{{Text: req.Prompt}}}},
 		GenerationConfig: geminiGenConfig{Temperature: g.temperature, MaxOutputTokens: req.MaxTokens},
 	}
-	if req.System != "" {
+	if req.CachedContent != "" {
+		// The cache holds the system instruction; the API refuses a
+		// request that sets both.
+		body.CachedContent = req.CachedContent
+	} else if req.System != "" {
 		body.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: req.System}}}
 	}
 	if req.JSON || req.Schema != nil {
@@ -228,6 +234,8 @@ func (g *Gemini) Complete(ctx context.Context, req Request) (Response, error) {
 			err := fmt.Errorf("Gemini API returned HTTP %d for %s%s: %s", status, g.model, tried, text)
 			if geminiRetryStatuses[status] {
 				err = fmt.Errorf("%w: %w", ErrTransient, err)
+			} else if body.CachedContent != "" && geminiCacheRefused(status, text) {
+				err = fmt.Errorf("%w: %w", ErrCacheUnavailable, err)
 			}
 			return Response{}, err
 		}
@@ -271,7 +279,7 @@ func (g *Gemini) Complete(ctx context.Context, req Request) (Response, error) {
 		u := resp.UsageMetadata
 		out := Response{
 			Text:            strings.TrimSpace(text.String()),
-			Model:           g.model,
+			Model:           firstNonEmptyString(resp.ModelVersion, g.model),
 			StopReason:      resp.Candidates[0].FinishReason,
 			InputTokens:     u.PromptTokenCount,
 			OutputTokens:    u.CandidatesTokenCount,
@@ -284,6 +292,128 @@ func (g *Gemini) Complete(ctx context.Context, req Request) (Response, error) {
 		}
 		return out, nil
 	}
+}
+
+func firstNonEmptyString(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// geminiCacheRefused tells a request refused for its context cache (gone,
+// expired, made for another model) from any other client error: 404, or a
+// 400/403 whose message is about the cached content.
+func geminiCacheRefused(status int, body string) bool {
+	if status == http.StatusNotFound {
+		return true
+	}
+	if status != http.StatusBadRequest && status != http.StatusForbidden {
+		return false
+	}
+	b := strings.ToLower(body)
+	return strings.Contains(b, "cachedcontent") || strings.Contains(b, "cached content") || strings.Contains(b, "cached_content")
+}
+
+type geminiCacheRequest struct {
+	Model             string          `json:"model"`
+	SystemInstruction *geminiContent  `json:"systemInstruction,omitempty"`
+	Contents          []geminiContent `json:"contents"`
+	TTL               string          `json:"ttl"`
+}
+
+// CreateCache stores system and prefix as an explicit context cache of the
+// client's model for ttl (CacheClient). The API bills the cache's tokens
+// as input when it is written and its storage per hour while it lives;
+// each request using it pays the cached rate for them.
+func (g *Gemini) CreateCache(ctx context.Context, system, prefix string, ttl time.Duration) (Cache, error) {
+	if g.key == "" {
+		return Cache{}, ErrNoGeminiKey
+	}
+	body := geminiCacheRequest{
+		Model:    "models/" + g.model,
+		Contents: []geminiContent{{Role: "user", Parts: []geminiPart{{Text: prefix}}}},
+		TTL:      fmt.Sprintf("%ds", max(1, int(ttl.Seconds()))),
+	}
+	if system != "" {
+		body.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: system}}}
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return Cache{}, err
+	}
+	status, raw, err := g.send(ctx, http.MethodPost, g.base+"/cachedContents", b)
+	if err != nil {
+		return Cache{}, err
+	}
+	if status != http.StatusOK {
+		return Cache{}, fmt.Errorf("Gemini %s: creating a context cache: HTTP %d: %s", g.model, status, clip(string(raw)))
+	}
+	var out struct {
+		Name          string `json:"name"`
+		UsageMetadata struct {
+			TotalTokenCount int64 `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || out.Name == "" {
+		return Cache{}, fmt.Errorf("Gemini %s: creating a context cache: unreadable answer: %s", g.model, clip(string(raw)))
+	}
+	return Cache{Name: out.Name, Tokens: out.UsageMetadata.TotalTokenCount}, nil
+}
+
+// DeleteCache drops a context cache (CacheClient), which stops its storage
+// fee. A cache already gone is not an error.
+func (g *Gemini) DeleteCache(ctx context.Context, name string) error {
+	if g.key == "" {
+		return ErrNoGeminiKey
+	}
+	if !strings.HasPrefix(name, "cachedContents/") {
+		return fmt.Errorf("Gemini: %q is not a context cache name", name)
+	}
+	status, raw, err := g.send(ctx, http.MethodDelete, g.base+"/"+name, nil)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK && status != http.StatusNotFound {
+		return fmt.Errorf("Gemini: deleting context cache %s: HTTP %d: %s", name, status, clip(string(raw)))
+	}
+	return nil
+}
+
+// send is one request to the API outside generateContent, bounded by 30s.
+func (g *Gemini) send(ctx context.Context, method, url string, body []byte) (int, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	hreq, err := http.NewRequestWithContext(ctx, method, url, rd)
+	if err != nil {
+		return 0, nil, err
+	}
+	hreq.Header.Set("x-goog-api-key", g.key)
+	if body != nil {
+		hreq.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := g.http.Do(hreq)
+	if err != nil {
+		return 0, nil, fmt.Errorf("Gemini %s: %v", g.model, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, fmt.Errorf("Gemini %s: %v", g.model, err)
+	}
+	return resp.StatusCode, raw, nil
+}
+
+func clip(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > geminiMaxErrorBody {
+		s = s[:geminiMaxErrorBody]
+	}
+	return s
 }
 
 // post sends one attempt and returns its status, headers and body. A

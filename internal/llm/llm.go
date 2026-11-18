@@ -6,6 +6,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // Sentinel errors agents can test for with errors.Is. They are wrapped by
@@ -20,6 +21,10 @@ var (
 	// ErrTransient marks failures worth retrying as they are: a broken
 	// stream, a timeout, a rate limit, an overloaded or failing server.
 	ErrTransient = errors.New("transient failure")
+	// ErrCacheUnavailable means a request named a context cache the
+	// provider no longer has (expired, deleted, or made for another
+	// model). The same request without the cache would be answered.
+	ErrCacheUnavailable = errors.New("context cache unavailable")
 )
 
 // IsTransient reports whether err is worth retrying unchanged.
@@ -43,11 +48,17 @@ type Request struct {
 	JSON bool
 	// ThinkingBudget, when non-nil, caps the model's thinking tokens.
 	ThinkingBudget *int
+	// CachedContent names an explicit context cache (CacheClient) holding
+	// the system prompt and the start of the conversation; Prompt is then
+	// what follows it, and System must be empty.
+	CachedContent string
 }
 
 // Response is the model's answer plus accounting.
 type Response struct {
-	Text            string
+	Text string
+	// Model is the model that answered, as the provider reports it (an
+	// alias resolves to the version it served), else the one requested.
 	Model           string
 	StopReason      string
 	InputTokens     int64
@@ -104,4 +115,21 @@ func (r Response) Merge(next Response) Response {
 // Client completes requests.
 type Client interface {
 	Complete(ctx context.Context, req Request) (Response, error)
+}
+
+// Cache is an explicit context cache: a system prompt and the start of a
+// user turn the provider keeps, so requests that begin with them pay the
+// cached rate for those tokens.
+type Cache struct {
+	Name   string // the provider's id, passed as Request.CachedContent
+	Tokens int64  // tokens it holds, as the provider counted them
+}
+
+// CacheClient is a Client that can keep explicit context caches.
+type CacheClient interface {
+	Client
+	// CreateCache stores system and prefix for ttl.
+	CreateCache(ctx context.Context, system, prefix string, ttl time.Duration) (Cache, error)
+	// DeleteCache drops a cache before its ttl runs out.
+	DeleteCache(ctx context.Context, name string) error
 }

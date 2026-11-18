@@ -19,6 +19,7 @@ type UsageSummary struct {
 	PromptTokens     int64
 	CachedTokens     int64
 	CompletionTokens int64
+	ThoughtsTokens   int64 // thinking, billed as output
 	TotalTokens      int64
 	Duration         time.Duration
 	CarriedFrom      string
@@ -139,8 +140,11 @@ func renderUsageFooter(b *strings.Builder, u *UsageSummary) {
 	var parts []string
 	parts = append(parts, fmt.Sprintf("%s prompt", FormatTokens(u.PromptTokens)))
 	parts = append(parts, fmt.Sprintf("%s completion", FormatTokens(u.CompletionTokens)))
+	if u.ThoughtsTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s thinking", FormatTokens(u.ThoughtsTokens)))
+	}
 	if u.CachedTokens > 0 {
-		parts = append(parts, fmt.Sprintf("%s cached [75%% discount]", FormatTokens(u.CachedTokens)))
+		parts = append(parts, fmt.Sprintf("%s cached", FormatTokens(u.CachedTokens)))
 	}
 	if u.Duration > 0 {
 		parts = append(parts, FormatDuration(u.Duration))

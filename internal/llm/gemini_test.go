@@ -322,3 +322,88 @@ func equalDurations(a, b []time.Duration) bool {
 	}
 	return true
 }
+
+func TestGeminiReportsTheServedModel(t *testing.T) {
+	f := &fakeGemini{replies: []reply{{status: 200, body: `{"modelVersion":"gemini-3.8-flash",` + okBody[1:]}}}
+	g, _ := newTestGemini(t, f)
+	resp, err := g.Complete(context.Background(), Request{Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Model != "gemini-3.8-flash" {
+		t.Errorf("model = %q, want the modelVersion the API reported", resp.Model)
+	}
+}
+
+func TestGeminiCachedContentRequest(t *testing.T) {
+	f := &fakeGemini{}
+	g, _ := newTestGemini(t, f)
+	if _, err := g.Complete(context.Background(), Request{System: "sys", Prompt: "suffix", CachedContent: "cachedContents/abc"}); err != nil {
+		t.Fatal(err)
+	}
+	req := f.requests[0]
+	if req.CachedContent != "cachedContents/abc" || req.SystemInstruction != nil || req.Contents[0].Parts[0].Text != "suffix" {
+		t.Errorf("request = %+v; want the cache named, no system instruction (the cache holds it), the suffix only", req)
+	}
+}
+
+func TestGeminiCacheRefusedIsErrCacheUnavailable(t *testing.T) {
+	for _, rep := range []reply{
+		{status: 404, body: `{"error":{"message":"not found"}}`},
+		{status: 403, body: `{"error":{"message":"CachedContent not found (or permission denied)"}}`},
+	} {
+		f := &fakeGemini{replies: []reply{rep}}
+		g, _ := newTestGemini(t, f)
+		_, err := g.Complete(context.Background(), Request{Prompt: "p", CachedContent: "cachedContents/gone"})
+		if !errors.Is(err, ErrCacheUnavailable) {
+			t.Errorf("HTTP %d: err = %v, want ErrCacheUnavailable", rep.status, err)
+		}
+	}
+	// Without a cache, a 400 is just an error.
+	f := &fakeGemini{replies: []reply{{status: 400, body: `{"error":{"message":"bad"}}`}}}
+	g, _ := newTestGemini(t, f)
+	if _, err := g.Complete(context.Background(), Request{Prompt: "p"}); err == nil || errors.Is(err, ErrCacheUnavailable) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestGeminiCreateAndDeleteCache(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	var created geminiCacheRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		if r.Method == http.MethodPost {
+			b, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(b, &created)
+			io.WriteString(w, `{"name":"cachedContents/xyz","model":"models/flash","usageMetadata":{"totalTokenCount":9307}}`)
+			return
+		}
+		io.WriteString(w, `{}`)
+	}))
+	t.Cleanup(srv.Close)
+	g := NewGemini("k", WithGeminiBaseURL(srv.URL), WithGeminiModel("flash"))
+	c, err := g.CreateCache(context.Background(), "sys", "prefix", 20*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Name != "cachedContents/xyz" || c.Tokens != 9307 {
+		t.Errorf("cache = %+v", c)
+	}
+	if created.Model != "models/flash" || created.TTL != "1200s" || created.SystemInstruction.Parts[0].Text != "sys" ||
+		created.Contents[0].Role != "user" || created.Contents[0].Parts[0].Text != "prefix" {
+		t.Errorf("create request = %+v", created)
+	}
+	if err := g.DeleteCache(context.Background(), c.Name); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.DeleteCache(context.Background(), "../models/flash"); err == nil {
+		t.Error("deleted something that is not a cache")
+	}
+	want := []string{"POST /cachedContents", "DELETE /cachedContents/xyz"}
+	if strings.Join(calls, ",") != strings.Join(want, ",") {
+		t.Errorf("calls = %v, want %v", calls, want)
+	}
+}
