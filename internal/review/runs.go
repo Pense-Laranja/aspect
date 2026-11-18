@@ -49,6 +49,20 @@ func (r *RunSummary) cost() float64 {
 	return r.TotalCostUSD
 }
 
+// thoughts is the run's thinking tokens: as recorded, or, for a run
+// written before they were (aspect before 2026-11-17), what the total holds
+// beyond the prompt and the completion.
+func (r *RunSummary) thoughts() int64 {
+	u := r.Usage
+	if u.ThoughtsTokens > 0 {
+		return u.ThoughtsTokens
+	}
+	if u.PromptTokens > 0 {
+		return max(0, r.tokens()-u.PromptTokens-u.CompletionTokens)
+	}
+	return 0
+}
+
 func (r *RunSummary) tokens() int64 {
 	if r.Usage.TotalTokens > 0 {
 		return r.Usage.TotalTokens
@@ -208,6 +222,9 @@ func PrintStatus(w io.Writer, r *RunSummary) {
 		}
 		if r.Usage.CompletionTokens > 0 {
 			parts = append(parts, fmt.Sprintf("%s completion", gate.FormatTokens(r.Usage.CompletionTokens)))
+		}
+		if t := r.thoughts(); t > 0 {
+			parts = append(parts, fmt.Sprintf("%s thinking", gate.FormatTokens(t)))
 		}
 		if r.Usage.CachedTokens > 0 {
 			parts = append(parts, fmt.Sprintf("%s cached", gate.FormatTokens(r.Usage.CachedTokens)))

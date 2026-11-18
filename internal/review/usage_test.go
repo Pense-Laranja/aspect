@@ -267,6 +267,23 @@ func TestPrintStatusDisplaysTokenBreakdown(t *testing.T) {
 		if !strings.Contains(out, "2.1k cached") {
 			t.Errorf("PrintStatus output missing cached tokens:\n%s", out)
 		}
+		// A run written before thoughts_tokens was recorded: thinking is
+		// what the total holds beyond prompt and completion.
+		if !strings.Contains(out, "2.1k thinking") {
+			t.Errorf("PrintStatus output missing derived thinking tokens:\n%s", out)
+		}
+	})
+
+	t.Run("status with recorded thinking tokens", func(t *testing.T) {
+		r := &RunSummary{
+			RunID: "local-20261117T120000Z", State: "completed", Outcome: "PASS", Engine: "flash",
+			Usage: Usage{CostUSD: 2.18, PromptTokens: 1_513_859, CompletionTokens: 6724, ThoughtsTokens: 272_852, TotalTokens: 1_793_435},
+		}
+		var b strings.Builder
+		PrintStatus(&b, r)
+		if out := b.String(); !strings.Contains(out, "273k thinking") {
+			t.Errorf("PrintStatus output missing thinking tokens:\n%s", out)
+		}
 	})
 
 	t.Run("status without cached tokens", func(t *testing.T) {
