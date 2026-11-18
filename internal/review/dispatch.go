@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,6 +24,15 @@ import (
 // Everything reviewers share comes first and the instructions come last,
 // next to where the model starts writing, as long-context guidance
 // recommends. A diff over the prompt budget is reviewed in parts.
+//
+// The system prompt and the shared part of the user turn (promptPrefix)
+// are the same bytes for every reviewer with the same file scope. When two
+// or more requests of a run share them, the run stores them once in an
+// explicit Gemini context cache (contextCache) and each request sends only
+// its own part (promptSuffix) as a second user turn after it: the model
+// reads the same text in the same order, and the shared tokens are billed
+// at the cached rate. Gemini's implicit cache was meant to do this alone,
+// but it hit on 3% of the prompt tokens of gordpress's runs (2026-11).
 
 const sharedSystemPrompt = `You are a senior code reviewer. The user message holds a code change ` +
 	`followed by the role you review it in, and the exact output format.
@@ -54,7 +64,20 @@ type request struct {
 	agentContext  string // this reviewer's assignment
 }
 
+// userPrompt is the whole user turn: the shared prefix, then this
+// reviewer's part.
 func userPrompt(req request, s *splitDiff, p diffPart) string {
+	return promptPrefix(req, s, p) + "\n\n" + promptSuffix(req)
+}
+
+// promptPrefix is the start of the user turn, everything but the reviewer's
+// own part: the PR, the change overview, the spec and the diff (or one part
+// of it). It depends only on the change and the reviewer's file scope, so
+// every reviewer of a run with the same scope gets it byte for byte, and
+// sharedSystemPrompt plus this prefix is what the run's context cache
+// holds (contextCache). Nothing that names or concerns one reviewer may go
+// here; TestPromptPrefixIsSharedAcrossAgents holds it to that.
+func promptPrefix(req request, s *splitDiff, p diffPart) string {
 	var sections []string
 	if req.sharedContext != "" {
 		sections = append(sections, strings.TrimSpace(req.sharedContext))
@@ -70,6 +93,14 @@ func userPrompt(req request, s *splitDiff, p diffPart) string {
 			"something as missing only because it is not in this part.", p.label(), p.total)
 	}
 	sections = append(sections, heading+"\n```diff\n"+p.text+"\n```")
+	return strings.Join(sections, "\n\n")
+}
+
+// promptSuffix is the reviewer's own part of the user turn, after the
+// shared prefix and next to where the model starts writing: its
+// assignment, its role instructions and the output format.
+func promptSuffix(req request) string {
+	var sections []string
 	if req.agentContext != "" {
 		sections = append(sections, strings.TrimSpace(req.agentContext))
 	}
@@ -104,13 +135,21 @@ func thinkingBudgetForPart(p diffPart) int {
 
 // Usage is what one review cost.
 type Usage struct {
-	Engine           string        `json:"engine,omitempty"`
-	CostUSD          float64       `json:"cost_usd,omitempty"`
-	PromptTokens     int64         `json:"prompt_tokens,omitempty"`
-	CachedTokens     int64         `json:"cached_tokens,omitempty"`
-	CompletionTokens int64         `json:"completion_tokens,omitempty"`
-	TotalTokens      int64         `json:"total_tokens,omitempty"`
-	Duration         time.Duration `json:"duration,omitempty"`
+	Engine           string  `json:"engine,omitempty"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
+	PromptTokens     int64   `json:"prompt_tokens,omitempty"`
+	CachedTokens     int64   `json:"cached_tokens,omitempty"`
+	CompletionTokens int64   `json:"completion_tokens,omitempty"`
+	// ThoughtsTokens are the model's thinking tokens: billed at the output
+	// rate, counted in TotalTokens, not in CompletionTokens.
+	ThoughtsTokens int64         `json:"thoughts_tokens,omitempty"`
+	TotalTokens    int64         `json:"total_tokens,omitempty"`
+	Duration       time.Duration `json:"duration,omitempty"`
+	// Model is the model that answered (the API's modelVersion), PricedAs
+	// the price table row it was billed by; they differ when the model was
+	// unknown to the table.
+	Model    string `json:"model,omitempty"`
+	PricedAs string `json:"priced_as,omitempty"`
 }
 
 type usage = Usage
@@ -142,7 +181,14 @@ func (u *Usage) Add(o Usage) {
 	u.PromptTokens += o.PromptTokens
 	u.CachedTokens += o.CachedTokens
 	u.CompletionTokens += o.CompletionTokens
+	u.ThoughtsTokens += o.ThoughtsTokens
 	u.TotalTokens += o.TotalTokens
+	if o.Model != "" {
+		u.Model = o.Model
+	}
+	if o.PricedAs != "" {
+		u.PricedAs = o.PricedAs
+	}
 }
 
 func (u *Usage) add(o Usage) {
@@ -211,6 +257,8 @@ type reviewer struct {
 	model        string
 	promptBudget int
 	slots        chan struct{} // nil: no cap
+	cache        *contextCache // nil: no explicit cache
+	now          func() time.Time
 }
 
 // review runs one reviewer over its diff and returns the merged raw report.
@@ -227,7 +275,7 @@ func (rv *reviewer) review(ctx context.Context, req request, h hooks) (*Object, 
 			h.waiting()
 		}
 		budget := thinkingBudgetForPart(p)
-		res, u, err := rv.ask(ctx, userPrompt(req, s, p), &budget, h.started)
+		res, u, err := rv.ask(ctx, promptPrefix(req, s, p), promptSuffix(req), &budget, h.started)
 		if err != nil {
 			return nil, u, err
 		}
@@ -266,7 +314,7 @@ func (rv *reviewer) review(ctx context.Context, req request, h hooks) (*Object, 
 		go func(i int, p diffPart) {
 			defer wg.Done()
 			budget := thinkingBudgetForPart(p)
-			res, u, err := rv.ask(pctx, userPrompt(req, s, p), &budget, started)
+			res, u, err := rv.ask(pctx, promptPrefix(req, s, p), promptSuffix(req), &budget, started)
 			if err != nil {
 				once.Do(func() {
 					firstErr = err
@@ -295,8 +343,12 @@ func (rv *reviewer) review(ctx context.Context, req request, h hooks) (*Object, 
 	return mergeParts(results), total, nil
 }
 
-// ask sends one prompt once a slot is free.
-func (rv *reviewer) ask(ctx context.Context, prompt string, thinkingBudget *int, started func()) (*Object, usage, error) {
+// ask sends one prompt, prefix then suffix, once a slot is free. When the
+// run's context cache holds sharedSystemPrompt and prefix, only suffix is
+// sent, after it; a cache the API no longer has falls back to sending the
+// whole prompt.
+func (rv *reviewer) ask(ctx context.Context, prefix, suffix string, thinkingBudget *int, started func()) (*Object, usage, error) {
+	cacheName := rv.cache.get(ctx, sharedSystemPrompt, prefix)
 	if rv.slots != nil {
 		select {
 		case rv.slots <- struct{}{}:
@@ -308,12 +360,27 @@ func (rv *reviewer) ask(ctx context.Context, prompt string, thinkingBudget *int,
 	if started != nil {
 		started()
 	}
-	resp, err := rv.client.Complete(ctx, llm.Request{
+	whole := llm.Request{
 		System:         sharedSystemPrompt,
-		Prompt:         prompt,
+		Prompt:         prefix + "\n\n" + suffix,
 		JSON:           true,
 		ThinkingBudget: thinkingBudget,
-	})
+	}
+	var resp llm.Response
+	var err error
+	if cacheName != "" {
+		cached := whole
+		cached.System, cached.Prompt, cached.CachedContent = "", suffix, cacheName
+		resp, err = rv.client.Complete(ctx, cached)
+		if errors.Is(err, llm.ErrCacheUnavailable) {
+			rv.cache.lost(cacheName)
+			resp, err = rv.client.Complete(ctx, whole)
+		} else if err == nil {
+			rv.cache.served(cacheName, resp.Model)
+		}
+	} else {
+		resp, err = rv.client.Complete(ctx, whole)
+	}
 	if err != nil {
 		return nil, usage{}, err
 	}
@@ -325,33 +392,40 @@ func (rv *reviewer) ask(ctx context.Context, prompt string, thinkingBudget *int,
 	if model == "" {
 		model = rv.model
 	}
+	price, pricedAs := priceOf(model, rv.model, rv.clock(), resp.InputTokens)
 	u := usage{
 		Engine:           rv.engine,
 		PromptTokens:     resp.InputTokens,
 		CachedTokens:     resp.CacheReadTokens,
 		CompletionTokens: resp.OutputTokens,
+		ThoughtsTokens:   resp.ThoughtTokens,
 		TotalTokens:      resp.InputTokens + resp.OutputTokens + resp.ThoughtTokens,
-		CostUSD:          geminiCost(model, resp.InputTokens, resp.CacheReadTokens, resp.OutputTokens),
+		CostUSD:          price.Cost(resp.InputTokens, resp.CacheReadTokens, resp.OutputTokens, resp.ThoughtTokens),
+		Model:            model,
+		PricedAs:         pricedAs,
 	}
 	return res, u, nil
 }
 
-// geminiCost is the estimated cost in USD of a Gemini call. Cached prompt
-// tokens are billed at 25% of the input rate (75% discount).
-func geminiCost(model string, prompt, cached, completion int64) float64 {
-	var in, out float64
-	switch {
-	case strings.Contains(strings.ToLower(model), "pro") && prompt > 128_000:
-		in, out = 2.50, 10.00
-	case strings.Contains(strings.ToLower(model), "pro"):
-		in, out = 1.25, 5.00
-	case prompt > 128_000:
-		in, out = 0.15, 0.60
-	default:
-		in, out = 0.075, 0.30
+func (rv *reviewer) clock() time.Time {
+	if rv.now != nil {
+		return rv.now()
 	}
-	cached = max(0, min(cached, prompt))
-	uncached := prompt - cached
-	inCost := float64(uncached)*in + float64(cached)*(in*0.25)
-	return roundTo((inCost+float64(completion)*out)/1_000_000, 6)
+	return time.Now()
+}
+
+// priceOf is the price of a call answered by model (or, when the table does
+// not know it, of the configured model, else of the default model, so an
+// unknown model is never free), and the table row it was priced as. A
+// fallback row is named "<row> (for <model>)" so the usage file shows it.
+func priceOf(model, configured string, at time.Time, prompt int64) (llm.GeminiPrice, string) {
+	if p, as, ok := llm.LookupGeminiPrice(model, at, prompt); ok {
+		return p, as
+	}
+	for _, m := range []string{configured, llm.DefaultGeminiModel} {
+		if p, as, ok := llm.LookupGeminiPrice(m, at, prompt); ok {
+			return p, fmt.Sprintf("%s (for %s)", as, model)
+		}
+	}
+	return llm.GeminiPrice{}, ""
 }

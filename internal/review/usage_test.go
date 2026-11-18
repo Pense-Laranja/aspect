@@ -61,7 +61,7 @@ func TestOutcomeLineFormatting(t *testing.T) {
 				TotalTokens:      7800,
 			},
 			reused: false,
-			want:   "Aspect gate outcome: PASS — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached [75% discount])",
+			want:   "Aspect gate outcome: PASS — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached)",
 		},
 		{
 			name:    "fresh run with duration included",
@@ -75,7 +75,7 @@ func TestOutcomeLineFormatting(t *testing.T) {
 				Duration:         87 * time.Second,
 			},
 			reused: false,
-			want:   "Aspect gate outcome: BLOCK — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached [75% discount], ~1m27s)",
+			want:   "Aspect gate outcome: BLOCK — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached, ~1m27s)",
 		},
 		{
 			name:    "fresh run with sub-second duration",
@@ -266,6 +266,23 @@ func TestPrintStatusDisplaysTokenBreakdown(t *testing.T) {
 		}
 		if !strings.Contains(out, "2.1k cached") {
 			t.Errorf("PrintStatus output missing cached tokens:\n%s", out)
+		}
+		// A run written before thoughts_tokens was recorded: thinking is
+		// what the total holds beyond prompt and completion.
+		if !strings.Contains(out, "2.1k thinking") {
+			t.Errorf("PrintStatus output missing derived thinking tokens:\n%s", out)
+		}
+	})
+
+	t.Run("status with recorded thinking tokens", func(t *testing.T) {
+		r := &RunSummary{
+			RunID: "local-20261117T120000Z", State: "completed", Outcome: "PASS", Engine: "flash",
+			Usage: Usage{CostUSD: 2.18, PromptTokens: 1_513_859, CompletionTokens: 6724, ThoughtsTokens: 272_852, TotalTokens: 1_793_435},
+		}
+		var b strings.Builder
+		PrintStatus(&b, r)
+		if out := b.String(); !strings.Contains(out, "273k thinking") {
+			t.Errorf("PrintStatus output missing thinking tokens:\n%s", out)
 		}
 	})
 
