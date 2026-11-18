@@ -22,6 +22,13 @@ const ManifestSchema = "aspect-review/manifest/v1"
 // Finalize when reviewers execute via Antigravity Flash workflows.
 const DefaultAntigravityEngine = "antigravity (flash)"
 
+// DefaultAntigravityPromptBudget bounds each prepared reviewer task's prompt in
+// tokens (55k tokens * 3 chars/token = 165 KB) so user_prompt stays safely
+// below Antigravity's 191,956-byte run_workflow USER_INPUT ceiling.
+const DefaultAntigravityPromptBudget = 55_000
+
+const antigravitySpecHeadroomTokens = 15_000
+
 // PromptTask describes one stateless reviewer invocation (the full diff or one
 // budgeted part of a diff).
 type PromptTask struct {
@@ -226,11 +233,30 @@ func reviewerReportJSONSchema() map[string]any {
 	}
 }
 
+func (e *Engine) preparePromptBudget() int {
+	budget := e.Config.AntigravityPromptBudget
+	if budget <= 0 {
+		budget = DefaultAntigravityPromptBudget
+	}
+	if e.Config.PromptBudget > 0 && e.Config.PromptBudget < budget {
+		budget = e.Config.PromptBudget
+	}
+	return budget
+}
+
 // Prepare plans a review run, reuses cached/carried verdicts where valid, and
 // materializes prompt bundles for any remaining agents without calling an LLM.
 func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error) {
+	budget := e.preparePromptBudget()
+	eff := e
+	if maxSpec := max(0, budget-antigravitySpecHeadroomTokens); e.Config.SpecBudget > maxSpec {
+		copied := *e
+		copied.Config.SpecBudget = maxSpec
+		eff = &copied
+	}
+
 	engineLabel := firstNonEmpty(opt.EngineLabel, DefaultAntigravityEngine)
-	ri, err := e.initRun(ctx, opt, engineLabel)
+	ri, err := eff.initRun(ctx, opt, engineLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +277,6 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 	}
 
 	shared := sharedPRContext(ri.pr)
-	budget := e.promptBudget()
 	schema := reviewerReportJSONSchema()
 	manifestAgents := make([]ManifestAgentState, 0, len(ri.plan.Agents))
 	tasks := []PromptTask{}
@@ -306,7 +331,7 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 			})
 			continue
 		}
-		agentDiff, err := e.scopedDiff(ctx, ri.repo, ri.plan, a, ri.diff)
+		agentDiff, err := eff.scopedDiff(ctx, ri.repo, ri.plan, a, ri.diff)
 		if err != nil {
 			if cerr := ctx.Err(); cerr != nil {
 				ri.st.fail("review prepare stopped: cancelled")
@@ -319,7 +344,7 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 			recordEmpty(a, "empty", "No changes matching this agent's scoped paths.")
 			continue
 		}
-		def, ok := e.agentDefinition(ri.repo, a.Agent)
+		def, ok := eff.agentDefinition(ri.repo, a.Agent)
 		if !ok {
 			if a.Mode == "gate" {
 				recordFailure(a, "missing_def", fmt.Sprintf("agent definition %s.md not found", a.Agent))
@@ -421,7 +446,7 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 
 	if len(tasks) == 0 {
 		allCarried := len(ri.plan.Agents) > 0 && len(ri.carriedAgents) == len(ri.plan.Agents)
-		res := e.finishRun(ctx, ri.repo, ri.dir, ri.cfg, ri.plan, ri.pr, ri.carryErr, opt.Publish, ri.notCurrent, ri.st, allCarried, true)
+		res := eff.finishRun(ctx, ri.repo, ri.dir, ri.cfg, ri.plan, ri.pr, ri.carryErr, opt.Publish, ri.notCurrent, ri.st, allCarried, true)
 		return &PreparedRun{
 			RunID:      ri.runID,
 			RunDir:     ri.dir,

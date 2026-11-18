@@ -52,6 +52,11 @@ type Config struct {
 	// PromptBudget is the prompt size limit in tokens; a larger diff is
 	// reviewed in parts (CODE_REVIEWER_GEMINI_PROMPT_BUDGET, 800000).
 	PromptBudget int
+	// AntigravityPromptBudget is the per-task prompt size limit in tokens for
+	// Prepare, sized so each user_prompt stays safely below Antigravity's
+	// ~192 KB run_workflow USER_INPUT ceiling
+	// (CODE_REVIEWER_ANTIGRAVITY_PROMPT_BUDGET, DefaultAntigravityPromptBudget).
+	AntigravityPromptBudget int
 	// SpecBudget bounds, in tokens, what each reviewer is shown of the spec:
 	// the system's constraints and the touched modules' rules, operations,
 	// scenarios and briefs, in that order of priority
@@ -74,19 +79,20 @@ func ConfigFromEnv() Config {
 		model = llm.DefaultGeminiModel
 	}
 	return Config{
-		DefaultRepo:          repo,
-		GeminiAPIKey:         geminiAPIKey(os.Getenv, homeFiles()),
-		GeminiModel:          model,
-		Temperature:          envFloat("CODE_REVIEWER_TEMP", 0.2),
-		Timeout:              envSeconds("CODE_REVIEWER_GEMINI_TIMEOUT", 360),
-		MaxRetries:           envInt("CODE_REVIEWER_GEMINI_RETRIES", 3),
-		RetryBase:            envSeconds("CODE_REVIEWER_GEMINI_RETRY_BASE", 5),
-		BlockRetries:         envInt("CODE_REVIEWER_GEMINI_BLOCK_RETRIES", 4),
-		BlockFinalNoThinking: envBool("CODE_REVIEWER_GEMINI_BLOCK_NO_THINKING", true),
-		MaxConcurrency:       envInt("CODE_REVIEWER_GEMINI_MAX_CONCURRENCY", 4),
-		PromptBudget:         envInt("CODE_REVIEWER_GEMINI_PROMPT_BUDGET", 800000),
-		SpecBudget:           envInt("CODE_REVIEWER_SPEC_BUDGET", 30000),
-		AspectHome:           os.Getenv("ASPECT_HOME"),
+		DefaultRepo:             repo,
+		GeminiAPIKey:            geminiAPIKey(os.Getenv, homeFiles()),
+		GeminiModel:             model,
+		Temperature:             envFloat("CODE_REVIEWER_TEMP", 0.2),
+		Timeout:                 envSeconds("CODE_REVIEWER_GEMINI_TIMEOUT", 360),
+		MaxRetries:              envInt("CODE_REVIEWER_GEMINI_RETRIES", 3),
+		RetryBase:               envSeconds("CODE_REVIEWER_GEMINI_RETRY_BASE", 5),
+		BlockRetries:            envInt("CODE_REVIEWER_GEMINI_BLOCK_RETRIES", 4),
+		BlockFinalNoThinking:    envBool("CODE_REVIEWER_GEMINI_BLOCK_NO_THINKING", true),
+		MaxConcurrency:          envInt("CODE_REVIEWER_GEMINI_MAX_CONCURRENCY", 4),
+		PromptBudget:            envInt("CODE_REVIEWER_GEMINI_PROMPT_BUDGET", 800000),
+		AntigravityPromptBudget: envInt("CODE_REVIEWER_ANTIGRAVITY_PROMPT_BUDGET", DefaultAntigravityPromptBudget),
+		SpecBudget:              envInt("CODE_REVIEWER_SPEC_BUDGET", 30000),
+		AspectHome:              os.Getenv("ASPECT_HOME"),
 	}
 }
 

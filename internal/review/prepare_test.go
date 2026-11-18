@@ -957,3 +957,81 @@ func TestPrepare_AllCarriedCompletionAndCancellationMarksStatusFailed(t *testing
 		}
 	})
 }
+
+func TestPrepare_CapsPromptBytesBelowAntigravityUserInputLimit(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, ".claude/review/gates.yaml"), "gates:\n  - agent: security-reviewer\n    paths: [\"**\"]\n    mode: gate\n")
+
+	// Commit a valid _aspect/aspect.yaml + large 180 KB module brief so SpecBudget: 80_000 would exceed 192 KB if unclamped.
+	specYAML := `aspect: "1"
+system:
+  name: demo
+  intent: Demo system for prompt size bounding.
+  language: go
+  module_path: example.com/demo
+  goals:
+    - id: G1
+      description: Keep prompts bounded.
+      verify: test
+modules:
+  - name: core
+    path: core
+    brief: briefs/core.md
+    intent: Core logic.
+    goals: [G1]
+`
+	var brief strings.Builder
+	brief.WriteString("# Core Module Brief\n\n")
+	for i := 0; i < 2400; i++ {
+		fmt.Fprintf(&brief, "- Rule %04d: Every state transition in core must validate preconditions and preserve invariants.\n", i)
+	}
+	writeFile(t, filepath.Join(repo, "_aspect/aspect.yaml"), specYAML)
+	writeFile(t, filepath.Join(repo, "_aspect/briefs/core.md"), brief.String())
+
+	// Generate >260 KB of reviewable Go source diff under core/.
+	var totalDiffBytes int
+	for fIdx := 0; fIdx < 6; fIdx++ {
+		var code strings.Builder
+		code.WriteString("package core\n\n")
+		for lineIdx := 0; lineIdx < 750; lineIdx++ {
+			line := fmt.Sprintf("func ComputeValue_%d_%03d(input int) int { return input*%d + %d }\n", fIdx, lineIdx, fIdx+2, lineIdx)
+			code.WriteString(line)
+			totalDiffBytes += len(line)
+		}
+		writeFile(t, filepath.Join(repo, "core", fmt.Sprintf("part_%d.go", fIdx)), code.String())
+	}
+	if totalDiffBytes < 250_000 {
+		t.Fatalf("expected >250KB generated code, got %d bytes", totalDiffBytes)
+	}
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "large diff with large spec brief")
+
+	eng := newPrepareEngine(t, repo)
+	eng.Config.SpecBudget = 80_000 // Explicitly exceeds DefaultAntigravityPromptBudget unless clamped by Prepare.
+
+	prep, err := eng.Prepare(context.Background(), Options{Repo: repo, Base: "main", Force: true})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if len(prep.Tasks) < 2 {
+		t.Fatalf("len(prep.Tasks) = %d, want >= 2 parts for >250KB diff", len(prep.Tasks))
+	}
+	if eng.Config.SpecBudget != 80_000 {
+		t.Errorf("Prepare mutated Engine.Config.SpecBudget in place: got %d, want 80000", eng.Config.SpecBudget)
+	}
+
+	const maxSafeUserPromptBytes = 185_000 // Strictly below Antigravity's 191,956-byte USER_INPUT truncation limit.
+	for _, task := range prep.Tasks {
+		raw, err := os.ReadFile(filepath.Join(prep.RunDir, filepath.FromSlash(task.PromptFile)))
+		if err != nil {
+			t.Fatalf("reading %s: %v", task.PromptFile, err)
+		}
+		var payload PromptPayload
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("decoding %s: %v", task.PromptFile, err)
+		}
+		if len(payload.UserPrompt) >= maxSafeUserPromptBytes {
+			t.Errorf("task %s UserPrompt length = %d bytes, want < %d bytes", task.TaskID, len(payload.UserPrompt), maxSafeUserPromptBytes)
+		}
+	}
+}
