@@ -108,7 +108,10 @@ type runStatus struct {
 	startedAt     time.Time
 	finishedAt    time.Time
 	usage         Usage
-	now           func() time.Time
+	// runUsage is what the run paid beyond its agents' requests: the
+	// context caches' writing and storage.
+	runUsage Usage
+	now      func() time.Time
 	// notCurrent keeps the run out of current_run.json (Options.Agent).
 	notCurrent bool
 }
@@ -167,7 +170,13 @@ func (r *runStatus) counts() (completed, findings, blockers, warnings int, u usa
 		warnings += a.warnings
 		u.add(a.usage)
 	}
+	u.add(r.runUsage)
 	return
+}
+
+// addRunUsage adds a cost of the run that no agent's request carries.
+func (r *runStatus) addRunUsage(u Usage) {
+	r.update(func() { r.runUsage.add(u) })
 }
 
 func (r *runStatus) engine() string {
@@ -422,6 +431,7 @@ func (r *runStatus) document() *Object {
 			tok.Set("prompt", a.usage.PromptTokens)
 			tok.Set("cached", a.usage.CachedTokens)
 			tok.Set("completion", a.usage.CompletionTokens)
+			tok.Set("thoughts", a.usage.ThoughtsTokens)
 			tok.Set("total", a.usage.TotalTokens)
 			e.Set("tokens", tok)
 		}
@@ -486,7 +496,11 @@ func (r *runStatus) document() *Object {
 		us.Set("prompt_tokens", u.PromptTokens)
 		us.Set("cached_tokens", u.CachedTokens)
 		us.Set("completion_tokens", u.CompletionTokens)
+		us.Set("thoughts_tokens", u.ThoughtsTokens)
 		us.Set("total_tokens", u.TotalTokens)
+		if r.runUsage.CostUSD > 0 {
+			us.Set("context_cache_cost_usd", roundTo(r.runUsage.CostUSD, 6))
+		}
 		d.Set("usage", us)
 	}
 	return d

@@ -64,7 +64,7 @@ func TestOutcomeLineBannerIntegration(t *testing.T) {
 			outcome: "PASS",
 			usage:   review.Usage{CostUSD: 0.0595, PromptTokens: 4500, CompletionTokens: 1200, CachedTokens: 2100, TotalTokens: 7800},
 			reused:  false,
-			want:    "Aspect gate outcome: PASS — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached [75% discount])",
+			want:    "Aspect gate outcome: PASS — Cost: $0.0595 (4.5k prompt, 1.2k completion, 2.1k cached)",
 		},
 		{
 			outcome: "PASS",

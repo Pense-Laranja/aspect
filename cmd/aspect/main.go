@@ -141,7 +141,8 @@ Review flags:
   belong to (see aspect context), within CODE_REVIEWER_SPEC_BUDGET tokens (30000; 0: none).
   The run is .review/<run-id>/: plan.json, the reports, status.json. Gemini credentials
   come from GEMINI_API_KEY or GOOGLE_API_KEY; GEMINI_MODEL and the CODE_REVIEWER_*
-  variables tune it (see internal/review/config.go). ASPECT_HOME supplies the agents
+  variables tune it (see internal/review/config.go); CODE_REVIEWER_GEMINI_CACHE_TTL (1200 s, 0: off)
+  bounds the context cache a run keeps of the prompt prefix its agents share. ASPECT_HOME supplies the agents
   and gates.yaml a repository lacks.
 
 MCP server (aspect mcp):

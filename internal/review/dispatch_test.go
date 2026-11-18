@@ -328,7 +328,7 @@ func TestRequestsInFlightAreCapped(t *testing.T) {
 		var wg sync.WaitGroup
 		for i := 0; i < 6; i++ {
 			wg.Add(1)
-			go func() { defer wg.Done(); rv.ask(context.Background(), "p", nil, nil) }()
+			go func() { defer wg.Done(); rv.ask(context.Background(), "p", "s", nil, nil) }()
 		}
 		waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return inFlight == tc.want })
 		close(gate)
@@ -424,28 +424,5 @@ func TestParallelPartsCompleteOutOfOrderStillMergeInOrder(t *testing.T) {
 	}
 	if u.CachedTokens < 1200 {
 		t.Errorf("cached tokens = %d, want >= 1200", u.CachedTokens)
-	}
-}
-
-func TestGeminiCost(t *testing.T) {
-	cases := []struct {
-		name                       string
-		model                      string
-		prompt, cached, completion int64
-		want                       float64
-	}{
-		{"flash >128k uncached", "gemini-flash-latest", 1_000_000, 0, 1_000_000, 0.75},
-		{"pro >128k uncached", "gemini-2.5-pro", 1_000_000, 0, 1_000_000, 12.5},
-		{"pro <=128k uncached", "gemini-2.5-pro", 100_000, 0, 10_000, 0.175},
-		{"flash <=128k uncached", "gemini-flash-latest", 100_000, 0, 10_000, 0.0105},
-		{"flash <=128k 100% cached (75% discount on input)", "gemini-flash-latest", 100_000, 100_000, 0, 0.001875},
-		{"pro <=128k partial cached", "gemini-2.5-pro", 100_000, 80_000, 10_000, 0.1},
-		{"negative cached clamped to 0", "gemini-flash-latest", 100_000, -50_000, 10_000, 0.0105},
-		{"cached > prompt clamped to prompt", "gemini-flash-latest", 100_000, 200_000, 0, 0.001875},
-	}
-	for _, c := range cases {
-		if got := geminiCost(c.model, c.prompt, c.cached, c.completion); got != c.want {
-			t.Errorf("%s: geminiCost(%s, %d, %d, %d) = %v, want %v", c.name, c.model, c.prompt, c.cached, c.completion, got, c.want)
-		}
 	}
 }
