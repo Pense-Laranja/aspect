@@ -10,6 +10,9 @@ import (
 	"github.com/Pense-Laranja/aspect/internal/llm"
 )
 
+// DefaultGeminiPromptBudget is the default token limit per Gemini request.
+const DefaultGeminiPromptBudget = 800_000
+
 // Config is the review engine's configuration. Every field comes from the
 // environment, under the names the Python CodeReviewer used, so a machine
 // set up for it needs no change.
@@ -96,7 +99,7 @@ func ConfigFromEnv() Config {
 		BlockFinalNoThinking:    envBool("CODE_REVIEWER_GEMINI_BLOCK_NO_THINKING", true),
 		MaxConcurrency:          envInt("CODE_REVIEWER_GEMINI_MAX_CONCURRENCY", 4),
 		CacheTTL:                envSeconds("CODE_REVIEWER_GEMINI_CACHE_TTL", 1200),
-		PromptBudget:            envInt("CODE_REVIEWER_GEMINI_PROMPT_BUDGET", 800000),
+		PromptBudget:            envInt("CODE_REVIEWER_GEMINI_PROMPT_BUDGET", DefaultGeminiPromptBudget),
 		AntigravityPromptBudget: envInt("CODE_REVIEWER_ANTIGRAVITY_PROMPT_BUDGET", DefaultAntigravityPromptBudget),
 		SpecBudget:              envInt("CODE_REVIEWER_SPEC_BUDGET", 30000),
 		AspectHome:              os.Getenv("ASPECT_HOME"),

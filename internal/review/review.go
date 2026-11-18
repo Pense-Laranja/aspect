@@ -128,8 +128,6 @@ type Result struct {
 	Usage     Usage  `json:"usage"`
 }
 
-const defaultPromptBudget = 800_000
-
 func (e *Engine) now() time.Time {
 	if e.Now != nil {
 		return e.Now()
@@ -141,7 +139,7 @@ func (e *Engine) promptBudget() int {
 	if e.Config.PromptBudget > 0 {
 		return e.Config.PromptBudget
 	}
-	return defaultPromptBudget
+	return DefaultGeminiPromptBudget
 }
 
 func (e *Engine) engineLabel() string {
@@ -154,6 +152,7 @@ type runInit struct {
 	headRef       string
 	branch        string
 	pr            PullRequest
+	gatesYAML     string
 	cfg           *gate.Config
 	plan          *gate.Plan
 	diff          string
@@ -180,16 +179,21 @@ func (e *Engine) initRun(ctx context.Context, opt Options, engineLabel string) (
 	branch, _ := gitx.Run(ctx, repo, "branch", "--show-current")
 	pr := e.detectPR(ctx, repo, branch, opt.PR)
 
-	cfg, err := gate.LoadConfig(e.gatesPath(repo))
+	gatesPath := e.gatesPath(repo)
+	gatesBytes, err := os.ReadFile(gatesPath)
 	if err != nil {
 		return nil, err
+	}
+	cfg, err := gate.ParseConfig(gatesBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", gatesPath, err)
 	}
 	plan, err := gitx.Plan(ctx, repo, cfg, base, head)
 	if err != nil {
 		return nil, err
 	}
 	for _, a := range plan.Agents {
-		if !isSafeSegment(a.Agent) {
+		if !gate.ValidAgentName(a.Agent) {
 			return nil, fmt.Errorf("unsafe agent name %q in gate plan", a.Agent)
 		}
 	}
@@ -238,7 +242,7 @@ func (e *Engine) initRun(ctx context.Context, opt Options, engineLabel string) (
 				}
 				return &runInit{
 					repo: repo, baseRef: base, headRef: head, branch: branch, pr: pr,
-					cfg: cfg, plan: res.Plan, diff: diff, diffHash: diffHash,
+					gatesYAML: string(gatesBytes), cfg: cfg, plan: res.Plan, diff: diff, diffHash: diffHash,
 					specOf: specOf, inputsHash: inputsHash, notCurrent: notCurrent,
 					reused: res,
 				}, nil
@@ -297,28 +301,86 @@ func (e *Engine) initRun(ctx context.Context, opt Options, engineLabel string) (
 	})
 	return &runInit{
 		repo: repo, baseRef: base, headRef: head, branch: branch, pr: pr,
-		cfg: cfg, plan: plan, diff: diff, diffHash: diffHash,
+		gatesYAML: string(gatesBytes), cfg: cfg, plan: plan, diff: diff, diffHash: diffHash,
 		specOf: specOf, inputsHash: inputsHash, carryErr: carryErr,
 		notCurrent: notCurrent, carriedAgents: carriedAgents,
 		runID: runID, dir: dir, st: st,
 	}, nil
 }
 
+type prevPublishState struct {
+	completed bool
+	pr        string
+	outcome   string
+	rendered  string
+	published string
+	publishOK bool
+}
+
+type finishArgs struct {
+	repo          string
+	dir           string
+	cfg           *gate.Config
+	plan          *gate.Plan
+	pr            PullRequest
+	carryErr      string
+	publish       bool
+	notCurrent    bool
+	st            *runStatus
+	allCarried    bool
+	writeRendered bool
+	prevPub       *prevPublishState
+}
+
 // finishRun evaluates reports with gate.Check, optionally writes rendered.md
 // and publishes, records the completed status, and returns the Result.
-func (e *Engine) finishRun(ctx context.Context, repo, dir string, cfg *gate.Config, plan *gate.Plan, pr PullRequest, carryErr string, publish, notCurrent bool, st *runStatus, allCarried, writeRendered bool) *Result {
-	res := &Result{RunID: st.runID, RunDir: dir, PR: pr.Number, PRURL: pr.URL, Plan: plan, CarryError: carryErr}
-	if len(plan.Agents) == 0 {
-		res.Outcome, res.Rendered = st.finish(OutcomePass, st.published), noAgents
-		res.Usage = st.usage
-		if writeRendered {
-			_ = os.WriteFile(filepath.Join(dir, "rendered.md"), []byte(res.Rendered), 0o644)
+func (e *Engine) finishRun(ctx context.Context, fa finishArgs) *Result {
+	res := &Result{RunID: fa.st.runID, RunDir: fa.dir, PR: fa.pr.Number, PRURL: fa.pr.URL, Plan: fa.plan, CarryError: fa.carryErr}
+	writeRenderedFile := func(text string) {
+		if !fa.writeRendered {
+			return
 		}
+		p := filepath.Join(fa.dir, "rendered.md")
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "aspect review: writing %s: %v\n", p, err)
+		}
+	}
+	canReusePrevPublish := func(finalOutcome, rendered string) bool {
+		return fa.prevPub != nil &&
+			fa.prevPub.completed &&
+			fa.prevPub.publishOK &&
+			fa.prevPub.published != "" &&
+			fa.pr.Number != "" &&
+			fa.prevPub.pr == fa.pr.Number &&
+			fa.prevPub.outcome == finalOutcome &&
+			fa.prevPub.rendered == rendered
+	}
+	resolvePublish := func(finalOutcome, rendered string) (published string, attempted, ok bool) {
+		if !fa.publish || fa.notCurrent {
+			if canReusePrevPublish(finalOutcome, rendered) {
+				return fa.prevPub.published, true, true
+			}
+			return "", false, false
+		}
+		if canReusePrevPublish(finalOutcome, rendered) {
+			return fa.prevPub.published, true, true
+		}
+		out, pubOK, ran := e.publishRun(ctx, fa.repo, fa.dir, fa.pr.Number)
+		return out, ran, pubOK
+	}
+
+	if len(fa.plan.Agents) == 0 {
+		writeRenderedFile(noAgents)
+		published, attempted, pubOK := resolvePublish(OutcomePass, noAgents)
+		res.Outcome = fa.st.finishWithPublish(OutcomePass, published, attempted, pubOK)
+		res.Rendered = noAgents
+		res.Published = published
+		res.Usage = fa.st.usage
 		return res
 	}
 
-	_, _, _, _, u := st.counts()
-	duration := e.now().Sub(st.startedAt)
+	_, _, _, _, u := fa.st.counts()
+	duration := e.now().Sub(fa.st.startedAt)
 	usageSummary := &gate.UsageSummary{
 		CostUSD:          u.CostUSD,
 		PromptTokens:     u.PromptTokens,
@@ -327,23 +389,19 @@ func (e *Engine) finishRun(ctx context.Context, repo, dir string, cfg *gate.Conf
 		ThoughtsTokens:   u.ThoughtsTokens,
 		TotalTokens:      u.TotalTokens,
 		Duration:         duration,
-		Reused:           allCarried,
+		Reused:           fa.allCarried,
 	}
 
-	check, rendered := e.check(cfg, plan, dir, usageSummary)
-	if writeRendered {
-		_ = os.WriteFile(filepath.Join(dir, "rendered.md"), []byte(rendered), 0o644)
-	}
-	published := st.published
-	if publish && !notCurrent && (pr.Number == "" || st.pr != pr.Number || published == "") {
-		published = e.publish(ctx, repo, dir, pr.Number)
-	}
+	check, rendered := e.check(fa.cfg, fa.plan, fa.dir, usageSummary)
+	writeRenderedFile(rendered)
 	outcome := strings.ToUpper(check.Outcome)
 	if outcome == "" {
 		outcome = OutcomeError // no verdict is not a pass
 	}
-	res.Outcome = st.finish(outcome, published)
-	res.Usage = st.usage
+	finalOut := fa.st.previewOutcome(outcome)
+	published, attempted, pubOK := resolvePublish(finalOut, rendered)
+	res.Outcome = fa.st.finishWithPublish(outcome, published, attempted, pubOK)
+	res.Usage = fa.st.usage
 	res.Rendered, res.Published = rendered, published
 	return res
 }
@@ -401,7 +459,11 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 		return ri.reused, nil
 	}
 	if len(ri.plan.Agents) == 0 {
-		return e.finishRun(ctx, ri.repo, ri.dir, ri.cfg, ri.plan, ri.pr, ri.carryErr, opt.Publish, ri.notCurrent, ri.st, false, false), nil
+		return e.finishRun(ctx, finishArgs{
+			repo: ri.repo, dir: ri.dir, cfg: ri.cfg, plan: ri.plan,
+			pr: ri.pr, carryErr: ri.carryErr, publish: opt.Publish,
+			notCurrent: ri.notCurrent, st: ri.st,
+		}), nil
 	}
 
 	shared := sharedPRContext(ri.pr)
@@ -461,7 +523,11 @@ func (e *Engine) Run(ctx context.Context, opt Options) (*Result, error) {
 	}
 
 	allCarried := len(ri.plan.Agents) > 0 && len(ri.carriedAgents) == len(ri.plan.Agents)
-	return e.finishRun(ctx, ri.repo, ri.dir, ri.cfg, ri.plan, ri.pr, ri.carryErr, opt.Publish, ri.notCurrent, ri.st, allCarried, false), nil
+	return e.finishRun(ctx, finishArgs{
+		repo: ri.repo, dir: ri.dir, cfg: ri.cfg, plan: ri.plan,
+		pr: ri.pr, carryErr: ri.carryErr, publish: opt.Publish,
+		notCurrent: ri.notCurrent, st: ri.st, allCarried: allCarried,
+	}), nil
 }
 
 // specContexts returns what each planned agent is shown of the spec: the
@@ -830,12 +896,12 @@ func FormatOutcomeLine(outcome string, u Usage, reused bool) string {
 	return fmt.Sprintf("Aspect gate outcome: %s — Cost: %s (%s)", outcome, gate.FormatCost(u.CostUSD), strings.Join(parts, ", "))
 }
 
-// publish runs .claude/review/publish.sh on the run, when the repository
-// has one, and returns what it said.
-func (e *Engine) publish(ctx context.Context, repo, dir, pr string) string {
+// publishRun runs .claude/review/publish.sh on the run, when the repository
+// has one, returning its output, whether it exited 0, and whether it ran.
+func (e *Engine) publishRun(ctx context.Context, repo, dir, pr string) (output string, ok bool, ran bool) {
 	script := filepath.Join(repo, ".claude", "review", "publish.sh")
 	if _, err := os.Stat(script); err != nil {
-		return ""
+		return "", false, false
 	}
 	args := []string{script, dir}
 	if pr != "" {
@@ -847,11 +913,11 @@ func (e *Engine) publish(ctx context.Context, repo, dir, pr string) string {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		if s := strings.TrimSpace(stdout.String()); s != "" {
-			return s
+			return s, false, true
 		}
-		return strings.TrimSpace(stderr.String())
+		return strings.TrimSpace(stderr.String()), false, true
 	}
-	return strings.TrimSpace(stdout.String())
+	return strings.TrimSpace(stdout.String()), true, true
 }
 
 var prInBranch = regexp.MustCompile(`(?i)(?:PR\s*#?|pr-?|-pr)(\d+)`)

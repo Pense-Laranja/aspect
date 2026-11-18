@@ -135,7 +135,8 @@ Review flags:
   -force            review again even if a run of the same diff exists
   -agent A          run only planned agent A in an isolated .review/agent-<time> run
   -o FILE           also write the Markdown result to FILE
-  prepare:  -json (emit PreparedRun JSON)  -engine LABEL (default "antigravity (flash)")
+  prepare:  -json (emit PreparedRun JSON and exit 0; inspect status and result.outcome)
+            -engine LABEL (default "antigravity (flash)")
   finalize: [run-id-or-dir] -repo DIR -pr N -publish -o FILE (no API key needed)
   Each reviewer is shown the system's constraints and the rules of the modules its files
   belong to (see aspect context), within CODE_REVIEWER_SPEC_BUDGET tokens (30000; 0: none).

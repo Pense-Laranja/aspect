@@ -104,7 +104,9 @@ func ParseConfig(b []byte) (*Config, error) {
 	return &c, c.validate()
 }
 
-func isSafeAgentName(s string) bool {
+// ValidAgentName reports whether s is a safe single-segment identifier suitable
+// for an agent name or report filename stem.
+func ValidAgentName(s string) bool {
 	return s != "" &&
 		s != "." &&
 		s != ".." &&
@@ -122,7 +124,7 @@ func (c *Config) validate() error {
 		switch {
 		case g.Agent == "":
 			return fmt.Errorf("gates[%d]: agent is required", i)
-		case !isSafeAgentName(g.Agent):
+		case !ValidAgentName(g.Agent):
 			return fmt.Errorf("gates[%d]: invalid agent name %q", i, g.Agent)
 		case seen[g.Agent]:
 			return fmt.Errorf("gates[%d]: agent %q listed twice", i, g.Agent)

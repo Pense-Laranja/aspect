@@ -706,7 +706,7 @@ func TestPrepareAndFinalize_SingleAgentIsolation(t *testing.T) {
 }
 
 func TestReviewerReportJSONSchema_ClosedInlineContract(t *testing.T) {
-	schema := reviewerReportJSONSchema()
+	schema := gate.ReviewerOutputSchema()
 	forbidden := map[string]bool{
 		"$ref": true, "$defs": true, "definitions": true,
 		"if": true, "then": true, "else": true,
@@ -1033,5 +1033,264 @@ modules:
 		if len(payload.UserPrompt) >= maxSafeUserPromptBytes {
 			t.Errorf("task %s UserPrompt length = %d bytes, want < %d bytes", task.TaskID, len(payload.UserPrompt), maxSafeUserPromptBytes)
 		}
+	}
+}
+
+func TestFinalize_RepublishesWhenOutcomeChangesAfterRetry(t *testing.T) {
+	t.Run("republishes on BLOCK->PASS retry, skips identical repeat, and republishes on new PR", func(t *testing.T) {
+		repo := testRepo(t)
+		pubCalls := filepath.Join(t.TempDir(), "publish_calls.txt")
+		writeFile(t, filepath.Join(repo, ".claude/review/publish.sh"),
+			"#!/bin/sh\necho \"$*\" >> "+pubCalls+"\necho \"published $*\"\n")
+		eng := newPrepareEngine(t, repo)
+
+		prep, err := eng.Prepare(context.Background(), Options{Repo: repo, Base: "main", PR: "42"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// 1. First Finalize: security-reviewer clean, red-team fails (.err) -> BLOCK, publishes call #1.
+		var redTask PromptTask
+		for _, task := range prep.Tasks {
+			if task.Agent == "security-reviewer" {
+				writeFile(t, filepath.Join(prep.RunDir, filepath.FromSlash(task.OutputFile)), clean)
+			} else {
+				redTask = task
+				writeFile(t, filepath.Join(prep.RunDir, filepath.FromSlash(task.ErrorFile)), "transient timeout\n")
+			}
+		}
+		res1, err := eng.Finalize(context.Background(), FinalizeOptions{Repo: repo, Run: prep.RunID, PR: "42", Publish: true})
+		if err != nil || res1.Outcome != OutcomeBlock || !strings.Contains(res1.Published, "--pr 42") {
+			t.Fatalf("res1 = %+v, err = %v", res1, err)
+		}
+
+		countCalls := func() []string {
+			b, err := os.ReadFile(pubCalls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return strings.Split(strings.TrimSpace(string(b)), "\n")
+		}
+		if got := len(countCalls()); got != 1 {
+			t.Fatalf("publish calls after BLOCK = %d, want 1", got)
+		}
+
+		// 2. Retry red-team cleanly and re-run Finalize with Publish: true -> outcome changes BLOCK -> PASS, MUST republish (call #2)!
+		_ = os.Remove(filepath.Join(prep.RunDir, filepath.FromSlash(redTask.ErrorFile)))
+		writeFile(t, filepath.Join(prep.RunDir, filepath.FromSlash(redTask.OutputFile)), clean)
+		res2, err := eng.Finalize(context.Background(), FinalizeOptions{Repo: repo, Run: prep.RunID, PR: "42", Publish: true})
+		if err != nil || res2.Outcome != OutcomePass || !strings.Contains(res2.Published, "--pr 42") {
+			t.Fatalf("res2 = %+v, err = %v", res2, err)
+		}
+		if got := len(countCalls()); got != 2 {
+			t.Fatalf("publish calls after PASS recovery = %d, want 2", got)
+		}
+		if st := readStatus(t, prep.RunDir); st["outcome"] != OutcomePass || st["publish_ok"] != true {
+			t.Errorf("status after PASS recovery = %+v", st)
+		}
+
+		// 3. Identical 3rd Finalize with Publish: true -> skips republishing (still 2 calls).
+		res3, err := eng.Finalize(context.Background(), FinalizeOptions{Repo: repo, Run: prep.RunID, PR: "42", Publish: true})
+		if err != nil || res3.Outcome != OutcomePass {
+			t.Fatalf("res3 = %+v, err = %v", res3, err)
+		}
+		if got := len(countCalls()); got != 2 {
+			t.Fatalf("publish calls after idempotent repeat = %d, want 2", got)
+		}
+
+		// 4. 4th Finalize targeting PR #43 -> publishes call #3 with --pr 43.
+		res4, err := eng.Finalize(context.Background(), FinalizeOptions{Repo: repo, Run: prep.RunID, PR: "43", Publish: true})
+		if err != nil || res4.Outcome != OutcomePass || !strings.Contains(res4.Published, "--pr 43") {
+			t.Fatalf("res4 = %+v, err = %v", res4, err)
+		}
+		calls := countCalls()
+		if len(calls) != 3 || !strings.Contains(calls[2], "--pr 43") {
+			t.Fatalf("publish calls after PR 43 = %v, want 3rd call with --pr 43", calls)
+		}
+	})
+
+	t.Run("retries publish.sh on subsequent Finalize when prior publish.sh exited non-zero", func(t *testing.T) {
+		repo := testRepo(t)
+		pubCalls := filepath.Join(t.TempDir(), "publish_retry_calls.txt")
+		failFlag := filepath.Join(t.TempDir(), "should_fail")
+		writeFile(t, failFlag, "1")
+		writeFile(t, filepath.Join(repo, ".claude/review/publish.sh"),
+			"#!/bin/sh\necho \"$*\" >> "+pubCalls+"\nif [ -f "+failFlag+" ]; then echo \"gh network failure\" >&2; exit 1; fi\necho \"published ok $*\"\n")
+		eng := newPrepareEngine(t, repo)
+
+		prep, err := eng.Prepare(context.Background(), Options{Repo: repo, Base: "main", PR: "42"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTaskOutputs(t, prep, map[string]string{"security-reviewer": clean, "red-team": clean})
+
+		// Call 1: publish.sh exits 1 -> publish_ok recorded as false.
+		res1, err := eng.Finalize(context.Background(), FinalizeOptions{Repo: repo, Run: prep.RunID, PR: "42", Publish: true})
+		if err != nil || res1.Outcome != OutcomePass || !strings.Contains(res1.Published, "gh network failure") {
+			t.Fatalf("res1 = %+v, err = %v", res1, err)
+		}
+		if st := readStatus(t, prep.RunDir); st["publish_ok"] != false {
+			t.Fatalf("expected publish_ok == false after failed publish.sh, got %v", st["publish_ok"])
+		}
+
+		// Call 2: publish.sh now succeeds -> Finalize MUST retry publish.sh even though outcome/rendered are unchanged!
+		_ = os.Remove(failFlag)
+		res2, err := eng.Finalize(context.Background(), FinalizeOptions{Repo: repo, Run: prep.RunID, PR: "42", Publish: true})
+		if err != nil || !strings.Contains(res2.Published, "published ok") {
+			t.Fatalf("res2 = %+v, err = %v", res2, err)
+		}
+		if st := readStatus(t, prep.RunDir); st["publish_ok"] != true {
+			t.Errorf("expected publish_ok == true after retry, got %v", st["publish_ok"])
+		}
+		b, _ := os.ReadFile(pubCalls)
+		if got := len(strings.Split(strings.TrimSpace(string(b)), "\n")); got != 2 {
+			t.Errorf("publish.sh call count = %d, want 2", got)
+		}
+	})
+}
+
+func TestPrepare_EnforcesAntigravityPromptByteCeiling(t *testing.T) {
+	t.Run("caps huge multi-thousand-file change overview so UserPrompt stays under 185 KB", func(t *testing.T) {
+		repo := testRepo(t)
+		writeFile(t, filepath.Join(repo, ".claude/review/gates.yaml"), "gates:\n  - agent: security-reviewer\n    paths: [\"**\"]\n    mode: gate\n")
+		for i := 0; i < 1100; i++ {
+			p := filepath.Join(repo, "many", fmt.Sprintf("module_component_file_%04d.go", i))
+			writeFile(t, p, fmt.Sprintf("package many\nfunc V%d() int { return %d }\n", i, i))
+		}
+		gitIn(t, repo, "add", "-A")
+		gitIn(t, repo, "commit", "-q", "-m", "1100 files")
+
+		eng := newPrepareEngine(t, repo)
+		prep, err := eng.Prepare(context.Background(), Options{Repo: repo, Base: "main", Force: true})
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if len(prep.Tasks) == 0 {
+			t.Fatal("expected pending tasks")
+		}
+		sawCappedOverview := false
+		for _, task := range prep.Tasks {
+			raw, err := os.ReadFile(filepath.Join(prep.RunDir, filepath.FromSlash(task.PromptFile)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload PromptPayload
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(payload.UserPrompt) > MaxAntigravityUserPromptBytes {
+				t.Errorf("task %s UserPrompt = %d bytes, exceeds MaxAntigravityUserPromptBytes (%d)", task.TaskID, len(payload.UserPrompt), MaxAntigravityUserPromptBytes)
+			}
+			if strings.Contains(payload.UserPrompt, "additional file entries omitted from overview") {
+				sawCappedOverview = true
+			}
+		}
+		if !sawCappedOverview {
+			t.Errorf("expected overview truncation marker on 1100-file diff")
+		}
+	})
+
+	t.Run("fails closed when oversized role instructions force prompt above 185 KB ceiling", func(t *testing.T) {
+		repo := testRepo(t)
+		writeFile(t, filepath.Join(repo, ".claude/review/gates.yaml"), "gates:\n  - agent: security-reviewer\n    paths: [\"**\"]\n    mode: gate\n")
+		hugeRole := "---\nname: security-reviewer\n---\n" + strings.Repeat("Check every line carefully. ", 7000) // ~196 KB role body
+		writeFile(t, filepath.Join(repo, ".claude/agents/security-reviewer.md"), hugeRole)
+		gitIn(t, repo, "commit", "-q", "-am", "huge role")
+
+		eng := newPrepareEngine(t, repo)
+		prep, err := eng.Prepare(context.Background(), Options{Repo: repo, Base: "main", Force: true})
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if prep.Status != "completed" || len(prep.Tasks) != 0 || prep.Result == nil || prep.Result.Outcome != OutcomeBlock {
+			t.Fatalf("oversized prompt must fail closed with BLOCK, got prep = %+v", prep)
+		}
+		errBytes, err := os.ReadFile(filepath.Join(prep.RunDir, "security-reviewer.error.txt"))
+		if err != nil || !strings.Contains(string(errBytes), "exceeds Antigravity limit") {
+			t.Errorf("security-reviewer.error.txt = %q, err = %v", errBytes, err)
+		}
+	})
+
+	t.Run("respects CODE_REVIEWER_ANTIGRAVITY_PROMPT_BUDGET and preserves reused Gemini engine label", func(t *testing.T) {
+		t.Setenv("CODE_REVIEWER_ANTIGRAVITY_PROMPT_BUDGET", "12345")
+		cfg := ConfigFromEnv()
+		if cfg.AntigravityPromptBudget != 12345 {
+			t.Errorf("ConfigFromEnv().AntigravityPromptBudget = %d, want 12345", cfg.AntigravityPromptBudget)
+		}
+		if cfg.PromptBudget != DefaultGeminiPromptBudget {
+			t.Errorf("ConfigFromEnv().PromptBudget = %d, want %d", cfg.PromptBudget, DefaultGeminiPromptBudget)
+		}
+
+		// Verify Prepare reusing an earlier Gemini Engine.Run preserves PreparedRun.Engine = "gemini (flash)".
+		repo := testRepo(t)
+		te := newTestEngine(t, repo, map[string]any{"security-reviewer": clean, "red-team": clean})
+		geminiRes := te.run(t, Options{})
+		if geminiRes.Outcome != OutcomePass {
+			t.Fatalf("geminiRes = %+v", geminiRes)
+		}
+		eng := newPrepareEngine(t, repo)
+		reusedPrep, err := eng.Prepare(context.Background(), Options{Repo: repo, Base: "main"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reusedPrep.Status != "reused" || reusedPrep.Engine != "gemini (flash)" {
+			t.Errorf("reusedPrep = %+v, want Engine == \"gemini (flash)\"", reusedPrep)
+		}
+	})
+}
+
+func TestFinalize_UsesPrepareTimeGateConfig(t *testing.T) {
+	repo := testRepo(t)
+	writeFile(t, filepath.Join(repo, ".claude/review/gates.yaml"), `gates:
+  - agent: security-reviewer
+    paths: ["**"]
+    mode: gate
+thresholds:
+  block: [critical, high]
+  warn: [medium, low]
+  min_confidence_to_block: 0.5
+`)
+	gitIn(t, repo, "commit", "-q", "-am", "gates threshold 0.5")
+
+	eng := newPrepareEngine(t, repo)
+	prep, err := eng.Prepare(context.Background(), Options{Repo: repo, Base: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mutate gates.yaml in the working tree AFTER Prepare (raising min_confidence_to_block to 0.99).
+	writeFile(t, filepath.Join(repo, ".claude/review/gates.yaml"), `gates:
+  - agent: security-reviewer
+    paths: ["**"]
+    mode: advisory
+thresholds:
+  block: [critical, high]
+  warn: [medium, low]
+  min_confidence_to_block: 0.99
+`)
+
+	writeTaskOutputs(t, prep, map[string]string{
+		"security-reviewer": `{
+			"summary": "High finding at 0.80 confidence.",
+			"findings": [{
+				"id": "s1",
+				"severity": "high",
+				"category": "security",
+				"title": "Auth bypass",
+				"location": {"file": "a.go", "line": 3},
+				"evidence": "func A()",
+				"recommendation": "Fix it",
+				"confidence": 0.80
+			}],
+			"handoffs": []
+		}`,
+	})
+
+	res, err := eng.Finalize(context.Background(), FinalizeOptions{Repo: repo, Run: prep.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomeBlock {
+		t.Fatalf("Outcome = %q, want BLOCK (Finalize must enforce prepare-time gates.yaml from manifest)", res.Outcome)
 	}
 }

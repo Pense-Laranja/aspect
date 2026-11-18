@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -27,7 +28,15 @@ const DefaultAntigravityEngine = "antigravity (flash)"
 // below Antigravity's 191,956-byte run_workflow USER_INPUT ceiling.
 const DefaultAntigravityPromptBudget = 55_000
 
-const antigravitySpecHeadroomTokens = 15_000
+// MaxAntigravityUserPromptBytes is the hard ceiling enforced on each prepared
+// task's UserPrompt when running under the default Antigravity prompt budget.
+const MaxAntigravityUserPromptBytes = 185_000
+
+const (
+	antigravitySpecHeadroomTokens = 15_000
+	maxAntigravityOverviewBytes   = 40_000
+	maxTaskErrorBytes             = 2048
+)
 
 // PromptTask describes one stateless reviewer invocation (the full diff or one
 // budgeted part of a diff).
@@ -84,6 +93,7 @@ type RunManifest struct {
 	PR         string               `json:"pr,omitempty"`
 	PRURL      string               `json:"pr_url,omitempty"`
 	Engine     string               `json:"engine"`
+	GatesYAML  string               `json:"gates_yaml,omitempty"`
 	StartedAt  time.Time            `json:"started_at"`
 	NotCurrent bool                 `json:"not_current,omitempty"`
 	CarryError string               `json:"carry_error,omitempty"`
@@ -114,125 +124,6 @@ type FinalizeOptions struct {
 	Publish bool   // run .claude/review/publish.sh when finalized
 }
 
-// reviewerReportJSONSchema returns a closed inline JSON schema compatible with
-// Antigravity's run_workflow agent(..., schema=...) contract (no $ref, $defs,
-// definitions, if/then/else, or allOf/anyOf/oneOf, and additionalProperties:
-// false on every object).
-func reviewerReportJSONSchema() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"required":             []string{"summary", "findings", "handoffs"},
-		"properties": map[string]any{
-			"summary": map[string]any{
-				"type": "string",
-			},
-			"findings": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"required": []string{
-						"id",
-						"severity",
-						"category",
-						"title",
-						"location",
-						"evidence",
-						"recommendation",
-						"confidence",
-					},
-					"properties": map[string]any{
-						"id": map[string]any{
-							"type": "string",
-						},
-						"severity": map[string]any{
-							"type": "string",
-							"enum": slices.Clone(gate.Severities),
-						},
-						"category": map[string]any{
-							"type": "string",
-							"enum": slices.Clone(gate.Categories),
-						},
-						"title": map[string]any{
-							"type": "string",
-						},
-						"location": map[string]any{
-							"type":                 "object",
-							"additionalProperties": false,
-							"required":             []string{"file"},
-							"properties": map[string]any{
-								"file": map[string]any{
-									"type": "string",
-								},
-								"line": map[string]any{
-									"type": "integer",
-								},
-								"end_line": map[string]any{
-									"type": "integer",
-								},
-							},
-						},
-						"spec_ref": map[string]any{
-							"type": "string",
-						},
-						"evidence": map[string]any{
-							"type": "string",
-						},
-						"reproduction": map[string]any{
-							"type": "string",
-						},
-						"recommendation": map[string]any{
-							"type": "string",
-						},
-						"confidence": map[string]any{
-							"type": "number",
-						},
-					},
-				},
-			},
-			"handoffs": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"required":             []string{"to", "reason"},
-					"properties": map[string]any{
-						"to": map[string]any{
-							"type": "string",
-						},
-						"reason": map[string]any{
-							"type": "string",
-						},
-					},
-				},
-			},
-			"adrs": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"required":             []string{"slug", "title", "body"},
-					"properties": map[string]any{
-						"slug": map[string]any{
-							"type": "string",
-						},
-						"title": map[string]any{
-							"type": "string",
-						},
-						"finding": map[string]any{
-							"type": "string",
-						},
-						"body": map[string]any{
-							"type": "string",
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
 func (e *Engine) preparePromptBudget() int {
 	budget := e.Config.AntigravityPromptBudget
 	if budget <= 0 {
@@ -244,10 +135,78 @@ func (e *Engine) preparePromptBudget() int {
 	return budget
 }
 
+func capOverviewBytes(overview string, limit int) string {
+	if limit <= 0 || len(overview) <= limit {
+		return overview
+	}
+	lines := strings.Split(overview, "\n")
+	var kept []string
+	used := 0
+	for i, ln := range lines {
+		next := used + len(ln) + 1
+		if next > limit && len(kept) > 0 {
+			omitted := len(lines) - i
+			kept = append(kept, fmt.Sprintf("... (%d additional file entries omitted from overview; see diff parts)", omitted))
+			break
+		}
+		kept = append(kept, ln)
+		used = next
+	}
+	return strings.Join(kept, "\n")
+}
+
+func preparePartsAndPrompts(req request, budget int, enforceCeiling bool) ([]string, error) {
+	s := splitReviewable(req.diff)
+	rawOverview := s.overview()
+	overview := rawOverview
+	if enforceCeiling && len(overview) > maxAntigravityOverviewBytes {
+		overview = capOverviewBytes(overview, maxAntigravityOverviewBytes)
+	}
+	fixed := sharedSystemPrompt + req.sharedContext + overview + req.specContext + req.agentContext + req.instructions + req.outputFormat
+	parts := chunkDiff(s, budget-estimateTokens(fixed)-promptOverheadTokens)
+
+	prompts := make([]string, len(parts))
+	for i, p := range parts {
+		var up string
+		if overview == rawOverview {
+			up = userPrompt(req, s, p)
+		} else {
+			up = buildUserPromptWithOverview(req, overview, p)
+		}
+		if enforceCeiling && len(up) > MaxAntigravityUserPromptBytes {
+			return nil, fmt.Errorf("prepared prompt for %s part %d/%d (%d bytes) exceeds Antigravity limit (%d bytes)",
+				req.agent, i+1, len(parts), len(up), MaxAntigravityUserPromptBytes)
+		}
+		prompts[i] = up
+	}
+	return prompts, nil
+}
+
+func buildUserPromptWithOverview(req request, overview string, p diffPart) string {
+	var sections []string
+	if req.sharedContext != "" {
+		sections = append(sections, strings.TrimSpace(req.sharedContext))
+	}
+	sections = append(sections, "### Change overview\n"+overview)
+	if req.specContext != "" {
+		sections = append(sections, strings.TrimSpace(req.specContext))
+	}
+	heading := "### Code diff under review"
+	if p.total > 1 {
+		heading = fmt.Sprintf("### Code diff, %s\nThe diff is too large for one prompt and is reviewed in %d parts. "+
+			"This part shows only the files below; the overview lists the rest. Do not report "+
+			"something as missing only because it is not in this part.", p.label(), p.total)
+	}
+	sections = append(sections, heading+"\n```diff\n"+p.text+"\n```")
+	sections = append(sections, promptSuffix(req))
+	return strings.Join(sections, "\n\n")
+}
+
 // Prepare plans a review run, reuses cached/carried verdicts where valid, and
 // materializes prompt bundles for any remaining agents without calling an LLM.
 func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error) {
 	budget := e.preparePromptBudget()
+	enforceCeiling := e.Config.AntigravityPromptBudget <= 0 || e.Config.AntigravityPromptBudget <= DefaultAntigravityPromptBudget
 	eff := e
 	if maxSpec := max(0, budget-antigravitySpecHeadroomTokens); e.Config.SpecBudget > maxSpec {
 		copied := *e
@@ -265,7 +224,7 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 			RunID:       ri.reused.RunID,
 			RunDir:      ri.reused.RunDir,
 			Status:      "reused",
-			Engine:      engineLabel,
+			Engine:      firstNonEmpty(ri.reused.Usage.Engine, engineLabel),
 			PR:          ri.reused.PR,
 			PRURL:       ri.reused.PRURL,
 			CarriedFrom: ri.reused.CarriedFrom,
@@ -277,7 +236,7 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 	}
 
 	shared := sharedPRContext(ri.pr)
-	schema := reviewerReportJSONSchema()
+	schema := gate.ReviewerOutputSchema()
 	manifestAgents := make([]ManifestAgentState, 0, len(ri.plan.Agents))
 	tasks := []PromptTask{}
 
@@ -315,7 +274,7 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 			ri.st.fail("review prepare stopped: cancelled")
 			return nil, err
 		}
-		if !isSafeSegment(a.Agent) {
+		if !gate.ValidAgentName(a.Agent) {
 			err := fmt.Errorf("unsafe agent name %q in gate plan", a.Agent)
 			ri.st.fail(err.Error())
 			return nil, err
@@ -355,8 +314,13 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 		}
 
 		req := buildAgentRequest(a, ri.plan, agentDiff, shared, ri.specOf(a), def)
-		s, parts := planParts(req, budget)
-		ri.st.planned(a.Agent, engineLabel, len(parts))
+		userPrompts, err := preparePartsAndPrompts(req, budget, enforceCeiling)
+		if err != nil {
+			recordFailure(a, "diff_error", err.Error())
+			continue
+		}
+
+		ri.st.planned(a.Agent, engineLabel, len(userPrompts))
 		ri.st.queued(a.Agent)
 
 		if !dirsCreated {
@@ -371,9 +335,9 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 			dirsCreated = true
 		}
 
-		for i, p := range parts {
+		for i, up := range userPrompts {
 			taskID := a.Agent
-			if len(parts) > 1 {
+			if len(userPrompts) > 1 {
 				taskID = fmt.Sprintf("%s.part-%d", a.Agent, i+1)
 			}
 			promptRel := "prompts/" + taskID + ".json"
@@ -387,9 +351,9 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 				Base:         ri.plan.Base,
 				Head:         ri.plan.Head,
 				Part:         i + 1,
-				TotalParts:   len(parts),
+				TotalParts:   len(userPrompts),
 				SystemPrompt: sharedSystemPrompt,
-				UserPrompt:   userPrompt(req, s, p),
+				UserPrompt:   up,
 				ReportSchema: schema,
 			}
 			if err := writeJSON(filepath.Join(ri.dir, filepath.FromSlash(promptRel)), &payload); err != nil {
@@ -401,7 +365,7 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 				Agent:      a.Agent,
 				Mode:       a.Mode,
 				Part:       i + 1,
-				TotalParts: len(parts),
+				TotalParts: len(userPrompts),
 				PromptFile: promptRel,
 				OutputFile: outRel,
 				ErrorFile:  errRel,
@@ -412,7 +376,7 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 			Mode:   a.Mode,
 			Files:  a.Files,
 			Status: "pending",
-			Parts:  len(parts),
+			Parts:  len(userPrompts),
 		})
 	}
 	if err := ctx.Err(); err != nil {
@@ -433,6 +397,7 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 		PR:         ri.pr.Number,
 		PRURL:      ri.pr.URL,
 		Engine:     engineLabel,
+		GatesYAML:  ri.gatesYAML,
 		StartedAt:  ri.st.startedAt,
 		NotCurrent: ri.notCurrent,
 		CarryError: ri.carryErr,
@@ -446,7 +411,12 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 
 	if len(tasks) == 0 {
 		allCarried := len(ri.plan.Agents) > 0 && len(ri.carriedAgents) == len(ri.plan.Agents)
-		res := eff.finishRun(ctx, ri.repo, ri.dir, ri.cfg, ri.plan, ri.pr, ri.carryErr, opt.Publish, ri.notCurrent, ri.st, allCarried, true)
+		res := eff.finishRun(ctx, finishArgs{
+			repo: ri.repo, dir: ri.dir, cfg: ri.cfg, plan: ri.plan,
+			pr: ri.pr, carryErr: ri.carryErr, publish: opt.Publish,
+			notCurrent: ri.notCurrent, st: ri.st, allCarried: allCarried,
+			writeRendered: true,
+		})
 		return &PreparedRun{
 			RunID:      ri.runID,
 			RunDir:     ri.dir,
@@ -474,6 +444,113 @@ func (e *Engine) Prepare(ctx context.Context, opt Options) (*PreparedRun, error)
 	}, nil
 }
 
+type validatedTask struct {
+	PromptTask
+	outPath string
+	errPath string
+}
+
+var secretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(authorization\s*:\s*(?:bearer\s+)?)[^\s"']+`),
+	regexp.MustCompile(`(?i)(\bbearer\s+)[A-Za-z0-9._\-+/=]+`),
+	regexp.MustCompile(`(?i)(x-goog-api-key\s*[:=]\s*)[^\s"'&]+`),
+	regexp.MustCompile(`(?i)((?:api[_-]?)?key\s*=\s*)[^\s"'&]+`),
+	regexp.MustCompile(`(AIza)[0-9A-Za-z\-_]{20,}`),
+}
+
+func sanitizeTaskError(raw string) string {
+	s := strings.TrimSpace(raw)
+	for _, re := range secretPatterns {
+		s = re.ReplaceAllString(s, "${1}[REDACTED]")
+	}
+	return clip(s, maxTaskErrorBytes)
+}
+
+func readTaskReport(task validatedTask) (*Object, string) {
+	errBytes, errReadErr := os.ReadFile(task.errPath)
+	if errReadErr == nil {
+		if errText := sanitizeTaskError(string(errBytes)); errText != "" {
+			return nil, fmt.Sprintf("task %s failed: %s", task.TaskID, errText)
+		}
+	} else if !errors.Is(errReadErr, os.ErrNotExist) {
+		return nil, fmt.Sprintf("task %s: reading error file: %v", task.TaskID, errReadErr)
+	}
+
+	outBytes, outReadErr := os.ReadFile(task.outPath)
+	if outReadErr != nil {
+		switch {
+		case errReadErr == nil:
+			return nil, fmt.Sprintf("task %s: reviewer task failed with empty error file", task.TaskID)
+		case errors.Is(outReadErr, os.ErrNotExist):
+			return nil, fmt.Sprintf("task %s: missing output file %s", task.TaskID, task.OutputFile)
+		default:
+			return nil, fmt.Sprintf("task %s: reading output file %s: %v", task.TaskID, task.OutputFile, outReadErr)
+		}
+	}
+
+	obj, err := extractJSON(string(outBytes))
+	if err != nil {
+		return nil, fmt.Sprintf("task %s: %v", task.TaskID, err)
+	}
+	if !obj.Has("summary") && !obj.Has("findings") {
+		return nil, fmt.Sprintf("task %s: invalid report object (missing summary and findings)", task.TaskID)
+	}
+	if obj.Has("findings") {
+		if _, ok := obj.Get("findings").([]any); !ok {
+			return nil, fmt.Sprintf("task %s: invalid report object (findings must be an array)", task.TaskID)
+		}
+	}
+	return obj, ""
+}
+
+func validateStoredReport(reportPath string, a gate.Planned, plan *gate.Plan) (*Report, error) {
+	rb, err := os.ReadFile(reportPath)
+	if err != nil {
+		return nil, err
+	}
+	gr, err := gate.DecodeReport(rb)
+	if err != nil {
+		return nil, err
+	}
+	if gr.Agent != a.Agent {
+		return nil, fmt.Errorf("report is from agent %q, want %q", gr.Agent, a.Agent)
+	}
+	if gr.Mode != a.Mode {
+		return nil, fmt.Errorf("report mode %q, want %q", gr.Mode, a.Mode)
+	}
+	if !a.Reviews(plan, gr.Base, gr.Head) {
+		return nil, fmt.Errorf("report reviews %s...%s, not planned %s...%s", gr.Base, gr.Head, plan.Base, plan.Head)
+	}
+	var rep Report
+	if err := json.Unmarshal(rb, &rep); err != nil {
+		return nil, err
+	}
+	return &rep, nil
+}
+
+func readPrevPublishState(prevStatus *Object, dirReal string) *prevPublishState {
+	if asText(prevStatus.Get("state")) != stateCompleted {
+		return nil
+	}
+	pub := asText(prevStatus.Get("published_status"))
+	pubOK := pub != ""
+	if v, ok := prevStatus.Get("publish_ok").(bool); ok {
+		pubOK = v
+	}
+	var rendered string
+	if b, err := os.ReadFile(filepath.Join(dirReal, "rendered.md")); err == nil {
+		rendered = string(b)
+	}
+	return &prevPublishState{
+		completed: true,
+		pr:        asText(prevStatus.Get("pr")),
+		outcome:   strings.ToUpper(asText(prevStatus.Get("outcome"))),
+		rendered:  rendered,
+		published: pub,
+		publishOK: pubOK,
+	}
+}
+
 // Finalize reads raw reviewer outputs produced for a prepared run, merges
 // multi-part outputs, normalizes reports, runs gate.Check, writes status.json
 // and rendered.md, and optionally publishes the result.
@@ -498,7 +575,7 @@ func (e *Engine) Finalize(ctx context.Context, opt FinalizeOptions) (*Result, er
 	if manifest.Schema != ManifestSchema {
 		return nil, fmt.Errorf("finalize: unsupported manifest schema %q (want %q)", manifest.Schema, ManifestSchema)
 	}
-	if !isSafeSegment(manifest.RunID) || manifest.RunID != paths.runID {
+	if !gate.ValidAgentName(manifest.RunID) || manifest.RunID != paths.runID {
 		return nil, fmt.Errorf("finalize: manifest run_id %q does not match run directory %q", manifest.RunID, paths.runID)
 	}
 
@@ -519,14 +596,14 @@ func (e *Engine) Finalize(ctx context.Context, opt FinalizeOptions) (*Result, er
 	}
 
 	for _, a := range plan.Agents {
-		if !isSafeSegment(a.Agent) {
+		if !gate.ValidAgentName(a.Agent) {
 			return nil, fmt.Errorf("finalize: unsafe agent name %q in plan.json", a.Agent)
 		}
 	}
 
 	manifestByAgent := make(map[string]ManifestAgentState, len(manifest.Agents))
 	for _, ms := range manifest.Agents {
-		if !isSafeSegment(ms.Agent) {
+		if !gate.ValidAgentName(ms.Agent) {
 			return nil, fmt.Errorf("finalize: unsafe agent name %q in manifest.json", ms.Agent)
 		}
 		if !slices.Contains(gate.Modes, ms.Mode) {
@@ -546,17 +623,12 @@ func (e *Engine) Finalize(ctx context.Context, opt FinalizeOptions) (*Result, er
 		}
 	}
 
-	type validatedTask struct {
-		PromptTask
-		outPath string
-		errPath string
-	}
 	tasksByAgent := map[string]map[int]validatedTask{}
 	for _, t := range manifest.Tasks {
-		if !isSafeSegment(t.Agent) {
+		if !gate.ValidAgentName(t.Agent) {
 			return nil, fmt.Errorf("finalize: unsafe task agent %q in manifest.json", t.Agent)
 		}
-		if !isSafeSegment(t.TaskID) {
+		if !gate.ValidAgentName(t.TaskID) {
 			return nil, fmt.Errorf("finalize: unsafe task_id %q in manifest.json", t.TaskID)
 		}
 		if t.Part < 1 || t.TotalParts < 1 || t.Part > t.TotalParts {
@@ -590,26 +662,27 @@ func (e *Engine) Finalize(ctx context.Context, opt FinalizeOptions) (*Result, er
 		return nil, err
 	}
 
-	cfg, err := gate.LoadConfig(e.gatesPath(paths.repoAbs))
-	if err != nil {
-		return nil, err
+	var cfg *gate.Config
+	if strings.TrimSpace(manifest.GatesYAML) != "" {
+		cfg, err = gate.ParseConfig([]byte(manifest.GatesYAML))
+		if err != nil {
+			return nil, fmt.Errorf("finalize: parsing manifest gates_yaml: %w", err)
+		}
+	} else {
+		cfg, err = gate.LoadConfig(e.gatesPath(paths.repoAbs))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	prevStatus := readStatusObject(statusPath)
+	prevPub := readPrevPublishState(prevStatus, paths.dirReal)
+
 	pr := PullRequest{Number: manifest.PR, URL: manifest.PRURL}
 	if opt.PR != "" {
 		pr = e.detectPR(ctx, paths.repoAbs, manifest.Branch, opt.PR)
 	} else if pr.Number == "" && opt.Publish {
 		pr = e.detectPR(ctx, paths.repoAbs, manifest.Branch, "")
-	}
-
-	alreadyPublished := ""
-	if asText(prevStatus.Get("state")) == stateCompleted {
-		prevPub := asText(prevStatus.Get("published_status"))
-		prevPR := asText(prevStatus.Get("pr"))
-		if prevPub != "" && pr.Number != "" && prevPR == pr.Number {
-			alreadyPublished = prevPub
-		}
 	}
 
 	startedAt := manifest.StartedAt
@@ -630,7 +703,6 @@ func (e *Engine) Finalize(ctx context.Context, opt FinalizeOptions) (*Result, er
 		prURL:         pr.URL,
 		state:         stateRunning,
 		defaultEngine: engineLabel,
-		published:     alreadyPublished,
 		agents:        map[string]*agentStatus{},
 		startedAt:     startedAt,
 		now:           e.now,
@@ -655,34 +727,32 @@ func (e *Engine) Finalize(ctx context.Context, opt FinalizeOptions) (*Result, er
 
 		switch ms.Status {
 		case "carried":
-			rb, err := os.ReadFile(reportPath)
+			rep, err := validateStoredReport(reportPath, a, &plan)
 			if err != nil {
-				failAgent("reading carried report: " + err.Error())
-				continue
-			}
-			var rep Report
-			if err := json.Unmarshal(rb, &rep); err != nil {
-				failAgent("decoding carried report: " + err.Error())
+				failAgent("invalid carried report: " + err.Error())
 				continue
 			}
 			carriedCount++
 			st.update(func() {
-				st.agent(a.Agent).applyCarried(&rep, ms.CarriedFrom, startedAt)
+				st.agent(a.Agent).applyCarried(rep, ms.CarriedFrom, startedAt)
 			})
 
 		case "empty", "skipped":
-			rb, err := os.ReadFile(reportPath)
-			var rep Report
-			if err != nil || json.Unmarshal(rb, &rep) != nil {
+			rep, err := validateStoredReport(reportPath, a, &plan)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					failAgent("invalid " + ms.Status + " report: " + err.Error())
+					continue
+				}
 				fallback := emptyReport(a.Agent, a.Mode, plan.Base, plan.Head, firstNonEmpty(ms.Summary, "Review completed."))
 				if werr := writeJSON(reportPath, fallback); werr != nil {
 					failAgent("writing empty report: " + werr.Error())
 					continue
 				}
-				rep = *fallback
+				rep = fallback
 			}
 			_ = os.Remove(errFilePath)
-			st.completed(a.Agent, &rep, usage{})
+			st.completed(a.Agent, rep, usage{})
 
 		case "missing_def", "diff_error":
 			failAgent(firstNonEmpty(ms.Error, "agent failed during prepare"))
@@ -708,50 +778,11 @@ func (e *Engine) Finalize(ctx context.Context, opt FinalizeOptions) (*Result, er
 					partFailed = true
 					break
 				}
-				errBytes, errReadErr := os.ReadFile(task.errPath)
-				if errReadErr == nil {
-					if errText := strings.TrimSpace(string(errBytes)); errText != "" {
-						failAgent(fmt.Sprintf("task %s failed: %s", task.TaskID, errText))
-						partFailed = true
-						break
-					}
-				} else if !errors.Is(errReadErr, os.ErrNotExist) {
-					failAgent(fmt.Sprintf("task %s: reading error file: %v", task.TaskID, errReadErr))
+				obj, failMsg := readTaskReport(task)
+				if failMsg != "" {
+					failAgent(failMsg)
 					partFailed = true
 					break
-				}
-
-				outBytes, outReadErr := os.ReadFile(task.outPath)
-				if outReadErr != nil {
-					switch {
-					case errReadErr == nil:
-						failAgent(fmt.Sprintf("task %s: reviewer task failed with empty error file", task.TaskID))
-					case errors.Is(outReadErr, os.ErrNotExist):
-						failAgent(fmt.Sprintf("task %s: missing output file %s", task.TaskID, task.OutputFile))
-					default:
-						failAgent(fmt.Sprintf("task %s: reading output file %s: %v", task.TaskID, task.OutputFile, outReadErr))
-					}
-					partFailed = true
-					break
-				}
-
-				obj, err := extractJSON(string(outBytes))
-				if err != nil {
-					failAgent(fmt.Sprintf("task %s: %v", task.TaskID, err))
-					partFailed = true
-					break
-				}
-				if !obj.Has("summary") && !obj.Has("findings") {
-					failAgent(fmt.Sprintf("task %s: invalid report object (missing summary and findings)", task.TaskID))
-					partFailed = true
-					break
-				}
-				if obj.Has("findings") {
-					if _, ok := obj.Get("findings").([]any); !ok {
-						failAgent(fmt.Sprintf("task %s: invalid report object (findings must be an array)", task.TaskID))
-						partFailed = true
-						break
-					}
 				}
 				partResults = append(partResults, obj)
 			}
@@ -784,7 +815,20 @@ func (e *Engine) Finalize(ctx context.Context, opt FinalizeOptions) (*Result, er
 	}
 
 	allCarried := len(plan.Agents) > 0 && carriedCount == len(plan.Agents)
-	return e.finishRun(ctx, paths.repoAbs, paths.dirAbs, cfg, &plan, pr, manifest.CarryError, opt.Publish, manifest.NotCurrent, st, allCarried, true), nil
+	return e.finishRun(ctx, finishArgs{
+		repo:          paths.repoAbs,
+		dir:           paths.dirAbs,
+		cfg:           cfg,
+		plan:          &plan,
+		pr:            pr,
+		carryErr:      manifest.CarryError,
+		publish:       opt.Publish,
+		notCurrent:    manifest.NotCurrent,
+		st:            st,
+		allCarried:    allCarried,
+		writeRendered: true,
+		prevPub:       prevPub,
+	}), nil
 }
 
 type finalizePaths struct {
@@ -795,24 +839,24 @@ type finalizePaths struct {
 	runID    string
 }
 
-func resolveFinalizePaths(repoOpt, runOpt, defaultRepo string) (*finalizePaths, error) {
-	// Case 1: no Run specified -> resolve via <repo>/.review/current_run.json.
-	if runOpt == "" {
-		repoAbs, err := filepath.Abs(firstNonEmpty(repoOpt, defaultRepo, "."))
-		if err != nil {
-			return nil, err
-		}
-		repoReal, err := filepath.EvalSymlinks(repoAbs)
-		if err != nil {
-			return nil, fmt.Errorf("finalize: resolving repository %q: %w", repoAbs, err)
-		}
-		if err := checkNoSymlinkEscape(repoReal, filepath.Join(repoReal, ".review")); err != nil {
-			return nil, fmt.Errorf("finalize: .review directory: %w", err)
-		}
-		reviewReal, err := filepath.EvalSymlinks(filepath.Join(repoReal, ".review"))
-		if err != nil {
-			return nil, fmt.Errorf("finalize: resolving .review directory: %w", err)
-		}
+func resolveRunInRepo(repoOpt, defaultRepo, runID string, fromCurrent bool) (*finalizePaths, error) {
+	repoAbs, err := filepath.Abs(firstNonEmpty(repoOpt, defaultRepo, "."))
+	if err != nil {
+		return nil, err
+	}
+	repoReal, err := filepath.EvalSymlinks(repoAbs)
+	if err != nil {
+		return nil, fmt.Errorf("finalize: resolving repository %q: %w", repoAbs, err)
+	}
+	if err := checkNoSymlinkEscape(repoReal, filepath.Join(repoReal, ".review")); err != nil {
+		return nil, fmt.Errorf("finalize: .review directory: %w", err)
+	}
+	reviewReal, err := filepath.EvalSymlinks(filepath.Join(repoReal, ".review"))
+	if err != nil {
+		return nil, fmt.Errorf("finalize: resolving .review directory: %w", err)
+	}
+
+	if fromCurrent {
 		curPath := filepath.Join(reviewReal, "current_run.json")
 		if err := checkNoSymlinkEscape(reviewReal, curPath); err != nil {
 			return nil, fmt.Errorf("finalize: current_run.json: %w", err)
@@ -827,83 +871,51 @@ func resolveFinalizePaths(repoOpt, runOpt, defaultRepo string) (*finalizePaths, 
 		if err := json.Unmarshal(b, &cur); err != nil {
 			return nil, fmt.Errorf("finalize: decoding current_run.json: %w", err)
 		}
-		if !isSafeSegment(cur.RunID) {
+		if !gate.ValidAgentName(cur.RunID) {
 			return nil, fmt.Errorf("finalize: invalid run_id %q in current_run.json", cur.RunID)
 		}
-		candReal := filepath.Join(reviewReal, cur.RunID)
-		if err := checkNoSymlinkEscape(reviewReal, candReal); err != nil {
-			return nil, fmt.Errorf("finalize: run %q: %w", cur.RunID, err)
-		}
-		dirReal, err := filepath.EvalSymlinks(candReal)
-		if err != nil {
-			return nil, fmt.Errorf("finalize: resolving run %q: %w", cur.RunID, err)
-		}
-		fi, err := os.Stat(dirReal)
-		if err != nil || !fi.IsDir() {
-			return nil, fmt.Errorf("finalize: run %q is not a directory", cur.RunID)
-		}
-		if filepath.Dir(dirReal) != reviewReal {
-			return nil, fmt.Errorf("finalize: run %q escapes .review directory", cur.RunID)
-		}
-		return &finalizePaths{
-			repoAbs:  repoAbs,
-			repoReal: repoReal,
-			dirAbs:   filepath.Join(repoAbs, ".review", cur.RunID),
-			dirReal:  dirReal,
-			runID:    cur.RunID,
-		}, nil
+		runID = cur.RunID
+	} else if !gate.ValidAgentName(runID) {
+		return nil, fmt.Errorf("finalize: invalid run id %q", runID)
 	}
 
-	// Case 2: bare run ID (no path separators).
+	candReal := filepath.Join(reviewReal, runID)
+	if err := checkNoSymlinkEscape(reviewReal, candReal); err != nil {
+		return nil, fmt.Errorf("finalize: run %q: %w", runID, err)
+	}
+	dirReal, err := filepath.EvalSymlinks(candReal)
+	if err != nil {
+		return nil, fmt.Errorf("finalize: resolving run %q: %w", runID, err)
+	}
+	fi, err := os.Stat(dirReal)
+	if err != nil || !fi.IsDir() {
+		return nil, fmt.Errorf("finalize: run %q is not a directory", runID)
+	}
+	if filepath.Dir(dirReal) != reviewReal {
+		return nil, fmt.Errorf("finalize: run %q escapes .review directory", runID)
+	}
+	return &finalizePaths{
+		repoAbs:  repoAbs,
+		repoReal: repoReal,
+		dirAbs:   filepath.Join(repoAbs, ".review", runID),
+		dirReal:  dirReal,
+		runID:    runID,
+	}, nil
+}
+
+func resolveFinalizePaths(repoOpt, runOpt, defaultRepo string) (*finalizePaths, error) {
+	if runOpt == "" {
+		return resolveRunInRepo(repoOpt, defaultRepo, "", true)
+	}
 	if !strings.ContainsAny(runOpt, `/\`) {
-		if !isSafeSegment(runOpt) {
-			return nil, fmt.Errorf("finalize: invalid run id %q", runOpt)
-		}
-		repoAbs, err := filepath.Abs(firstNonEmpty(repoOpt, defaultRepo, "."))
-		if err != nil {
-			return nil, err
-		}
-		repoReal, err := filepath.EvalSymlinks(repoAbs)
-		if err != nil {
-			return nil, fmt.Errorf("finalize: resolving repository %q: %w", repoAbs, err)
-		}
-		if err := checkNoSymlinkEscape(repoReal, filepath.Join(repoReal, ".review")); err != nil {
-			return nil, fmt.Errorf("finalize: .review directory: %w", err)
-		}
-		reviewReal, err := filepath.EvalSymlinks(filepath.Join(repoReal, ".review"))
-		if err != nil {
-			return nil, fmt.Errorf("finalize: resolving .review directory: %w", err)
-		}
-		candReal := filepath.Join(reviewReal, runOpt)
-		if err := checkNoSymlinkEscape(reviewReal, candReal); err != nil {
-			return nil, fmt.Errorf("finalize: run %q: %w", runOpt, err)
-		}
-		dirReal, err := filepath.EvalSymlinks(candReal)
-		if err != nil {
-			return nil, fmt.Errorf("finalize: resolving run %q: %w", runOpt, err)
-		}
-		fi, err := os.Stat(dirReal)
-		if err != nil || !fi.IsDir() {
-			return nil, fmt.Errorf("finalize: run %q is not a directory", runOpt)
-		}
-		if filepath.Dir(dirReal) != reviewReal {
-			return nil, fmt.Errorf("finalize: run %q escapes .review directory", runOpt)
-		}
-		return &finalizePaths{
-			repoAbs:  repoAbs,
-			repoReal: repoReal,
-			dirAbs:   filepath.Join(repoAbs, ".review", runOpt),
-			dirReal:  dirReal,
-			runID:    runOpt,
-		}, nil
+		return resolveRunInRepo(repoOpt, defaultRepo, runOpt, false)
 	}
 
-	// Case 3: relative or absolute directory path.
 	dirAbs, err := filepath.Abs(runOpt)
 	if err != nil {
 		return nil, err
 	}
-	if !isSafeSegment(filepath.Base(dirAbs)) || filepath.Base(filepath.Dir(dirAbs)) != ".review" {
+	if !gate.ValidAgentName(filepath.Base(dirAbs)) || filepath.Base(filepath.Dir(dirAbs)) != ".review" {
 		return nil, fmt.Errorf("finalize: run directory %q must be inside a repository's .review/<run-id> directory", runOpt)
 	}
 	inferredRepoAbs := filepath.Dir(filepath.Dir(dirAbs))
@@ -928,7 +940,7 @@ func resolveFinalizePaths(repoOpt, runOpt, defaultRepo string) (*finalizePaths, 
 		return nil, fmt.Errorf("finalize: %q is not a directory", runOpt)
 	}
 	runID := filepath.Base(dirReal)
-	if !isSafeSegment(runID) || filepath.Base(filepath.Dir(dirReal)) != ".review" {
+	if !gate.ValidAgentName(runID) || filepath.Base(filepath.Dir(dirReal)) != ".review" {
 		return nil, fmt.Errorf("finalize: run directory %q must be inside a repository's .review/<run-id> directory", runOpt)
 	}
 
@@ -969,15 +981,6 @@ func resolveFinalizePaths(repoOpt, runOpt, defaultRepo string) (*finalizePaths, 
 	}, nil
 }
 
-func isSafeSegment(s string) bool {
-	return s != "" &&
-		s != "." &&
-		s != ".." &&
-		!strings.HasPrefix(s, ".") &&
-		!strings.ContainsAny(s, `/\`) &&
-		filepath.Base(s) == s
-}
-
 func strictlyInside(dir, path string) bool {
 	dirClean := filepath.Clean(dir)
 	pathClean := filepath.Clean(path)
@@ -996,7 +999,7 @@ func resolveSafeRunFile(dirReal, relPath string) (string, error) {
 		return "", fmt.Errorf("path %q escapes run directory", relPath)
 	}
 	for _, seg := range strings.Split(clean, string(filepath.Separator)) {
-		if !isSafeSegment(seg) {
+		if !gate.ValidAgentName(seg) {
 			return "", fmt.Errorf("path %q contains unsafe segment %q", relPath, seg)
 		}
 	}

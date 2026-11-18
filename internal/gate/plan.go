@@ -120,6 +120,13 @@ type Planned struct {
 	CarriedFrom *Carried `json:"carried_from,omitempty"`
 }
 
+// Reviews reports whether a report of base...head belongs to this planned
+// agent: it reviews the plan's range (or the plan's carried range), or, for
+// an agent carried individually, the range of the run it was carried from.
+func (pl Planned) Reviews(p *Plan, base, head string) bool {
+	return pl.reviews(p, base, head)
+}
+
 // reviews says whether a report of base...head belongs to this planned
 // agent: it reviews the plan's range (or the plan's carried range), or, for
 // an agent carried individually, the range of the run it was carried from.

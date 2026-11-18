@@ -647,6 +647,109 @@ func TestSchemaMatchesValidator(t *testing.T) {
 	}
 }
 
+// TestReviewerOutputSchemaMatchesReportSchema keeps ReviewerOutputSchema in
+// lockstep with report.schema.json and the Go Report/Finding/Location/Handoff/ADR types.
+func TestReviewerOutputSchemaMatchesReportSchema(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", ".claude", "review", "report.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var canonical struct {
+		Properties map[string]struct{} `json:"properties"`
+		Defs       map[string]struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(b, &canonical); err != nil {
+		t.Fatal(err)
+	}
+
+	inlineSchema := ReviewerOutputSchema()
+	forbidden := map[string]bool{
+		"$ref": true, "$defs": true, "definitions": true,
+		"if": true, "then": true, "else": true,
+		"allOf": true, "anyOf": true, "oneOf": true,
+	}
+	var walk func(path string, node any)
+	walk = func(path string, node any) {
+		m, ok := node.(map[string]any)
+		if !ok {
+			return
+		}
+		for k, v := range m {
+			if forbidden[k] {
+				t.Errorf("%s contains forbidden keyword %q", path, k)
+			}
+			walk(path+"."+k, v)
+		}
+		if m["type"] == "object" {
+			if ap, ok := m["additionalProperties"].(bool); !ok || ap {
+				t.Errorf("%s: object must have additionalProperties: false", path)
+			}
+		}
+	}
+	walk("root", inlineSchema)
+
+	keysOfMap := func(m map[string]any) []string {
+		var keys []string
+		for k := range m {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		return keys
+	}
+	keysOfDef := func(name string) []string {
+		var keys []string
+		for k := range canonical.Defs[name].Properties {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		return keys
+	}
+
+	rootProps := inlineSchema["properties"].(map[string]any)
+	// ReviewerOutputSchema omits only the run-stamped top-level fields added by Normalize.
+	stamped := []string{"schema", "agent", "mode", "base", "head", "changes"}
+	gotTop := append(keysOfMap(rootProps), stamped...)
+	slices.Sort(gotTop)
+	var wantTop []string
+	for k := range canonical.Properties {
+		wantTop = append(wantTop, k)
+	}
+	slices.Sort(wantTop)
+	if !slices.Equal(gotTop, wantTop) {
+		t.Errorf("top-level + stamped keys = %v, report.schema.json has %v", gotTop, wantTop)
+	}
+
+	findingProps := rootProps["findings"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	if got, want := keysOfMap(findingProps), keysOfDef("finding"); !slices.Equal(got, want) {
+		t.Errorf("finding properties = %v, report.schema.json has %v", got, want)
+	}
+	if got := findingProps["severity"].(map[string]any)["enum"].([]string); !slices.Equal(got, Severities) {
+		t.Errorf("severity enum = %v, want %v", got, Severities)
+	}
+	if got := findingProps["category"].(map[string]any)["enum"].([]string); !slices.Equal(got, Categories) {
+		t.Errorf("category enum = %v, want %v", got, Categories)
+	}
+
+	locProps := findingProps["location"].(map[string]any)["properties"].(map[string]any)
+	if got, want := keysOfMap(locProps), keysOfDef("location"); !slices.Equal(got, want) {
+		t.Errorf("location properties = %v, report.schema.json has %v", got, want)
+	}
+
+	handoffProps := rootProps["handoffs"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	if got, want := keysOfMap(handoffProps), keysOfDef("handoff"); !slices.Equal(got, want) {
+		t.Errorf("handoff properties = %v, report.schema.json has %v", got, want)
+	}
+
+	adrProps := rootProps["adrs"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	if got, want := keysOfMap(adrProps), keysOfDef("adr"); !slices.Equal(got, want) {
+		t.Errorf("adr properties = %v, report.schema.json has %v", got, want)
+	}
+}
+
 func TestLastJSONBlock(t *testing.T) {
 	text := "Summary.\n\n```json\n{\"first\": 1}\n```\n\nMore.\n\n```json\n{\"last\": 2}\n```\n"
 	b, err := LastJSONBlock(text)

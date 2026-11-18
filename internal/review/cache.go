@@ -622,6 +622,9 @@ func (e *Engine) carry(repo, from string, plan *gate.Plan, diffHash, inputsHash 
 	status.Set("pr", nil)
 	status.Set("pr_url", nil)
 	status.Set("published_status", nil)
+	if status.Has("publish_ok") {
+		status.Set("publish_ok", nil)
+	}
 	for _, f := range records(status, "findings") {
 		f.Set("run_id", runID)
 	}
@@ -660,13 +663,18 @@ func (e *Engine) reuse(ctx context.Context, repo, dir string, cfg *gate.Config, 
 	// (it finds the branch's own) but nothing is recorded, so a later run
 	// that finds one publishes too.
 	published := asText(status.Get("published_status"))
-	if publish && (pr.Number == "" || asText(status.Get("pr")) != pr.Number || published == "") {
-		if _, err := os.Stat(filepath.Join(repo, ".claude", "review", "publish.sh")); err == nil {
-			published = e.publish(ctx, repo, dir, pr.Number)
+	pubOK := published != ""
+	if v, ok := status.Get("publish_ok").(bool); ok {
+		pubOK = v
+	}
+	if publish && (pr.Number == "" || asText(status.Get("pr")) != pr.Number || published == "" || !pubOK) {
+		if out, ok, ran := e.publishRun(ctx, repo, dir, pr.Number); ran {
+			published = out
 			if pr.Number != "" {
 				status.Set("pr", pr.Number)
 				status.Set("pr_url", nullable(pr.URL))
-				status.Set("published_status", published)
+				status.Set("published_status", nullable(published))
+				status.Set("publish_ok", ok)
 				_ = writeJSON(statusPath, status)
 			}
 		}

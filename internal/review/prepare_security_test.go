@@ -528,3 +528,88 @@ func TestFinalize_RejectsTamperedManifestTasksAndModes(t *testing.T) {
 		})
 	}
 }
+
+func TestFinalize_ValidatesNonPendingReportsAndRedactsSecretsInErrorFiles(t *testing.T) {
+	t.Run("tampered empty or carried report on disk is rejected", func(t *testing.T) {
+		for _, status := range []string{"empty", "skipped", "carried"} {
+			t.Run(status, func(t *testing.T) {
+				repo := testRepo(t)
+				eng := newPrepareEngine(t, repo)
+				prep, err := eng.Prepare(context.Background(), Options{Repo: repo, Base: "main"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeTaskOutputs(t, prep, map[string]string{"security-reviewer": clean, "red-team": clean})
+				// Write a report claiming to be from another agent / wrong revision.
+				tampered := `{
+					"schema": "aspect-review/v1",
+					"agent": "wrong-agent",
+					"mode": "gate",
+					"base": "000000000000",
+					"head": "111111111111",
+					"summary": "forged",
+					"findings": [],
+					"handoffs": [],
+					"changes": []
+				}`
+				writeFile(t, filepath.Join(prep.RunDir, "security-reviewer.json"), tampered)
+				mutateManifest(t, prep.RunDir, func(m *RunManifest) {
+					m.Agents[0].Status = status
+				})
+
+				res, err := eng.Finalize(context.Background(), FinalizeOptions{Repo: repo, Run: prep.RunID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.Outcome != OutcomeBlock {
+					t.Fatalf("tampered %s report must fail closed with BLOCK, got %q", status, res.Outcome)
+				}
+				if exists(filepath.Join(prep.RunDir, "security-reviewer.json")) {
+					t.Errorf("tampered %s report was not deleted", status)
+				}
+			})
+		}
+	})
+
+	t.Run("redacts credentials and caps oversized .err content", func(t *testing.T) {
+		repo := testRepo(t)
+		eng := newPrepareEngine(t, repo)
+		prep, err := eng.Prepare(context.Background(), Options{Repo: repo, Base: "main"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rawErr := "HTTP 401 Authorization: Bearer ya29.SuperSecretToken123 " +
+			"x-goog-api-key: MySecretGoogKey " +
+			"https://example.com?key=QuerySecret999&foo=1 " +
+			"raw=AIzaSyDa1234567890abcdefghijklmnop " +
+			strings.Repeat("padding-", 600)
+		for _, task := range prep.Tasks {
+			if task.Agent == "security-reviewer" {
+				writeFile(t, filepath.Join(prep.RunDir, filepath.FromSlash(task.ErrorFile)), rawErr)
+			} else {
+				writeFile(t, filepath.Join(prep.RunDir, filepath.FromSlash(task.OutputFile)), clean)
+			}
+		}
+
+		res, err := eng.Finalize(context.Background(), FinalizeOptions{Repo: repo, Run: prep.RunID})
+		if err != nil || res.Outcome != OutcomeBlock {
+			t.Fatalf("res = %+v, err = %v", res, err)
+		}
+		savedErr, err := os.ReadFile(filepath.Join(prep.RunDir, "security-reviewer.error.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(savedErr)
+		for _, leaked := range []string{"SuperSecretToken123", "MySecretGoogKey", "QuerySecret999", "SyDa1234567890abcdefghijklmnop"} {
+			if strings.Contains(text, leaked) {
+				t.Errorf("unredacted secret %q leaked into error.txt:\n%s", leaked, text)
+			}
+		}
+		if !strings.Contains(text, "[REDACTED]") {
+			t.Errorf("expected [REDACTED] marker in error.txt:\n%s", text)
+		}
+		if len(text) > 2200 {
+			t.Errorf("error.txt was not capped (~2KB), got %d bytes", len(text))
+		}
+	})
+}
